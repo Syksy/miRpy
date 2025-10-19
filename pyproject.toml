@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mirpy"
+version = "0.1.0"
+description = "Misc python tools for handling aligned miRNA reads"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [{name = "Teemu Daniel Laajala"}]
+dependencies = [
+  "pysam>=0.22",
+]
+
+[project.optional-dependencies]
+bio = ["biopython>=1.83"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "types-setuptools"]
+
+[project.scripts]
+mirpy = "mirpy.cli:main"
