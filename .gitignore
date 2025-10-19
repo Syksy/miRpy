@@ -1,0 +1,13 @@
+# Ignore PyCharm stuff
+.idea/
+
+# Ignore anything in virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Other stuff like OS X and Windows bloat
+.DS_Store
+Thumbs.db
+desktop.ini
