@@ -1,0 +1,24 @@
+# Ignore PyCharm stuff
+.idea/
+
+# Ignore anything in virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Other stuff like OS X and Windows bloat
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Ignore 'pip install -e .' output
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+src/**/*.egg-info/
+src/**/__pycache__/
