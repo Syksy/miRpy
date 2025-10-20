@@ -8,6 +8,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "test":
         return miRpyTest(args.bams, n=args.num, region=args.region)
 
+    if args.cmd == "download":
+        url = args.url or None
+        try:
+            out_path = download_mirbase_gff(args.dest, url=url or None)
+            print(f"Downloaded miRBase GFF to: {out_path}")
+            return 0
+        except FileExistsError as e:
+            print(f"[ERROR] {e}")
+            return 2
+        except Exception as e:
+            print(f"[ERROR] {e}")
+            return 1
+
     parser.error("Unknown command")
     return 2
 
