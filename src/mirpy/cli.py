@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    # Sanity checking of BAM files
     t = sub.add_parser(
         "test",
         help="Print first N reads from each BAM file (bamnostic-based)."
@@ -26,6 +27,18 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("bams", nargs="+", help="One or more BAM files to test.")
     t.add_argument("-n", "--num", type=int, default=10, help="Number of reads per BAM.")
     t.add_argument("--region", help="Optional region like 'chr1:1000-2000'.")
+
+    # Support for downloading the latest miRBase GFF3 where user
+    d = sub.add_parser("download", help="Download miRBase hairpin GFF3 to a path.")
+    d.add_argument(
+        "dest",
+        help="Destination file path, e.g. data/hairpin.gff3.gz (or .gff3 to auto-decompress).",
+    )
+    d.add_argument(
+        "--url",
+        default=None,
+        help="Optional alternate URL (defaults to miRBase CURRENT hairpin.gff3.gz).",
+    )
 
     return p
 
