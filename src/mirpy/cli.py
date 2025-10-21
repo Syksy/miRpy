@@ -1,5 +1,6 @@
 import argparse
 from .tester import miRpyTest
+from .downloader import download_mirbase_gff
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
@@ -42,15 +43,15 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--region", help="Optional region like 'chr1:1000-2000'.")
 
     # Support for downloading the latest miRBase GFF3 where user
-    d = sub.add_parser("download", help="Download miRBase hairpin GFF3 to a path.")
+    d = sub.add_parser("download", help="Download miRBase GFF3 to a path.")
     d.add_argument(
         "dest",
-        help="Destination file path, e.g. data/hairpin.gff3.gz (or .gff3 to auto-decompress).",
+        help="Destination file path, e.g. data/hsa.gff3.",
     )
     d.add_argument(
         "--url",
         default=None,
-        help="Optional alternate URL (defaults to miRBase CURRENT hairpin.gff3.gz).",
+        help="Optional alternate URL (defaults to miRBase CURRENT hsa.gff3).",
     )
 
     return p
