@@ -21,7 +21,11 @@ def _first_line_text(path: Path) -> str:
         with open(path, "rt", encoding="utf-8", errors="replace") as fh:
             return fh.readline()
 
-def download_mirbase_gff(dest: str | os.PathLike, *, url: str | None = None, force: bool = False) -> Path:
+def download_mirbase_gff(
+        dest: str | os.PathLike,
+        *,
+        url: str | None = None,
+) -> Path:
     """
     Download a GFF3 (gz or plain) to 'dest'. If dest ends with .gff3 and the
     download is gzipped, auto-decompress; otherwise keep as-is.
