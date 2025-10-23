@@ -23,6 +23,25 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] {e}")
             return 1
 
+    if args.cmd == "gff-subset":
+        try:
+            n = subset_gff_by_criteria(
+                in_path=args.in_path,
+                out_path=args.out_path,
+                col_index=args.col_index,
+                split_char=args.split_char,
+                criteria=args.criteria,
+                case_insensitive=args.case_insensitive,
+            )
+            print(
+                f"Wrote {n} rows matching {args.criteria} "
+                f"(column {args.col_index}) to {args.out_path}"
+            )
+            return 0
+        except Exception as e:
+            print(f"[ERROR] {e}")
+            return 1
+
     parser.error("Unknown command")
     return 2
 
