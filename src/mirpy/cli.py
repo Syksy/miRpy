@@ -5,6 +5,7 @@ import shutil
 from .tester import miRpyTest
 from .downloader import download_mirbase_gff
 from .gfftools import subset_gff_by_criteria
+from .count import count_matrix
 
 from pathlib import Path
 
@@ -78,6 +79,21 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             print(f"[ERROR] {e}")
             return 1
+
+    # Count matched hits
+    if args.cmd == "count":
+        return count_matrix(
+            bam_paths=args.bams,
+            gff_path=args.gff,
+            out_path=args.out,
+            level=args.level,
+            metric=args.metric,
+            shift=args.shift,
+            max_nh=args.max_nh,
+            mode=args.mode,
+            log_level=args.log_level,
+            log_reads=args.log_reads,
+        )
 
     parser.error("Unknown command")
     return 2
@@ -166,6 +182,44 @@ def build_parser() -> argparse.ArgumentParser:
              "If omitted, only lists available examples."
     )
 
+    # count (matrix over multiple BAMs)
+    c = sub.add_parser(
+        "count",
+        help="Count mature/precursor miRNA across one or more name-sorted BAMs; output matrix."
+    )
+    c.add_argument(
+        "bams",
+        nargs="+",
+        help="One or more BAM files or glob patterns (e.g., sample*.namesorted.bam). Must be QNAME-sorted."
+    )
+    c.add_argument("--gff", required=True, help="miRBase-like GFF3 (with miRNA + primary_transcript).")
+    c.add_argument("--out", required=True, help="Output TSV matrix path.")
+    c.add_argument(
+        "--level",
+        choices=["mature", "precursor"],
+        default="mature",
+        help="Row level: 'mature' (default) or 'precursor'."
+    )
+    c.add_argument(
+        "--metric",
+        choices=["exact", "approx", "nonspecific", "exact_cpm", "approx_cpm", "nonspecific_cpm"],
+        default="exact",
+        help="Which metric to report in the matrix (counts or CPM)."
+    )
+    c.add_argument("--shift", type=int, default=4, help="Max |shift_start|+|shift_end| for approximate matches (default 4).")
+    c.add_argument("--max-nh", type=int, default=50, help="Skip reads with NH greater than this (default 50).")
+    c.add_argument(
+        "--mode",
+        choices=["auto", "qname", "nh-bucket"],
+        default="auto",
+        help="How to read BAMs: 'qname' expects name-sorted; 'nh-bucket' streams unsorted using NH to know when a read is complete; "
+             "'auto' tries qname else nh-bucket."
+    )
+    c.add_argument("--log-level", default="INFO",
+                   choices=["ERROR", "WARNING", "INFO", "DEBUG"],
+                   help="Logging verbosity (default: INFO).")
+    c.add_argument("--log-reads", type=int, default=0,
+                   help="When DEBUG, log details for the first N reads per BAM (default: 0).")
     return p
 
 if __name__ == "__main__":
