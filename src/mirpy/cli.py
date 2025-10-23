@@ -1,15 +1,22 @@
 import argparse
+import importlib.resources as res
+import shutil
+
 from .tester import miRpyTest
 from .downloader import download_mirbase_gff
 from .gfftools import subset_gff_by_criteria
+
+from pathlib import Path
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # Test BAM files
     if args.cmd == "test":
         return miRpyTest(args.bams, n=args.num, region=args.region)
 
+    # Download miRBase GFF3 annotations
     if args.cmd == "download":
         url = args.url or None
         try:
@@ -23,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] {e}")
             return 1
 
+    # Handling GFF3 subsetting
     if args.cmd == "gff-subset":
         try:
             n = subset_gff_by_criteria(
@@ -37,6 +45,35 @@ def main(argv: list[str] | None = None) -> int:
                 f"Wrote {n} rows matching {args.criteria} "
                 f"(column {args.col_index}) to {args.out_path}"
             )
+            return 0
+        except Exception as e:
+            print(f"[ERROR] {e}")
+            return 1
+
+    # Example *.bam / *.bai (1k reads from 3 samples)
+    if args.cmd == "examples":
+        try:
+            data_root = res.files("mirpy.data")
+            examples = [f for f in data_root.iterdir() if f.name.endswith((".bam", ".bai"))]
+
+            if not examples:
+                print("No example BAM files found in mirpy.data.")
+                return 0
+
+            if args.out_dir:
+                out_path = Path(args.out_dir)
+                out_path.mkdir(parents=True, exist_ok=True)
+
+                for f in examples:
+                    dest = out_path / f.name
+                    with f.open("rb") as src, open(dest, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                print(f"Copied {len(examples)} example files to: {out_path.resolve()}")
+            else:
+                print("Available example files packaged with mirpy:")
+                for f in examples:
+                    print(f"  {f.name}")
+
             return 0
         except Exception as e:
             print(f"[ERROR] {e}")
@@ -117,6 +154,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore case when matching criteria.",
     )
 
+    # Example *.bam and *.bai files
+    e = sub.add_parser(
+        "examples",
+        help="List or export example BAM/BAM index files packaged with mirpy."
+    )
+    e.add_argument(
+        "--out",
+        dest="out_dir",
+        help="Optional directory to copy example BAM files into. "
+             "If omitted, only lists available examples."
+    )
 
     return p
 
