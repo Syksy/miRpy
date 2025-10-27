@@ -362,12 +362,16 @@ def _count_qname_sorted(
                     mature_counts[k][2] += 1
             # If multiple mature names, then ignore the read entirely (Perl behavior).
 
+    progress_every = 100000
     # Single streaming pass (names are contiguous in QNAME-sorted BAM)
     with bn.AlignmentFile(str(bam_path), "rb") as bam:
         for aln in bam:
             if getattr(aln, "is_unmapped", False):
                 continue
             aligned_reads += 1
+
+            if logger and aligned_reads % progress_every == 0:
+                logger.info(f"Processed {aligned_reads:,} alignments...")
 
             qn = _get_read_name(aln)
             if current_qname is None:
@@ -490,11 +494,16 @@ def _count_unsorted_nh_bucket(
         if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
             reads_logged += 1
 
+    progress_every = 100000
     # Stream once
     for aln in bn.AlignmentFile(str(bam_path), "rb"):
         if getattr(aln, "is_unmapped", False):
             continue
         aligned_reads += 1
+
+        if logger and aligned_reads % progress_every == 0:
+            logger.info(f"Processed {aligned_reads:,} alignments...")
+
         qn = _get_read_name(aln)
         buckets[qn].append(aln)
 

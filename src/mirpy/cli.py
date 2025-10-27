@@ -2,7 +2,7 @@ import argparse
 import importlib.resources as res
 import shutil
 
-from .tester import miRpyTest
+from .tester import view_bam_head
 from .downloader import download_mirbase_gff
 from .gfftools import subset_gff_by_criteria
 from .count import count_matrix
@@ -15,7 +15,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Test BAM files
     if args.cmd == "test":
-        return miRpyTest(args.bams, n=args.num, region=args.region)
+        return view_bam_head(args.bams, n=args.num, region=args.region)
 
     # Download miRBase GFF3 annotations
     if args.cmd == "download":
@@ -108,12 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Sanity checking of BAM files
     t = sub.add_parser(
-        "test",
+        "head",
         help="Print first N reads from each BAM file (bamnostic-based)."
     )
     t.add_argument("bams", nargs="+", help="One or more BAM files to test.")
     t.add_argument("-n", "--num", type=int, default=10, help="Number of reads per BAM.")
-    t.add_argument("--region", help="Optional region like 'chr1:1000-2000'.")
+    t.add_argument("-r", "--region", help="Optional region like 'chr1:1000-2000'.")
 
     # Support for downloading the latest miRBase GFF3
     d = sub.add_parser("download", help="Download miRBase GFF3 to a path.")
@@ -173,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Example *.bam and *.bai files
     e = sub.add_parser(
         "examples",
-        help="List or export example BAM/BAM index files packaged with mirpy."
+        help="List or export example BAM/BAM index files packaged with miRpy."
     )
     e.add_argument(
         "--out",

@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
 import bamnostic as bn
+from pathlib import Path
+import glob
 
 
 def _get_read_name(aln) -> str:
@@ -11,16 +13,37 @@ def _get_read_name(aln) -> str:
             return v
     return "NA"
 
+def _expand_bam_patterns(bams: list[str]) -> list[str]:
+    """Expand glob patterns (sample*.bam) cross-platform; keep order; de-dupe."""
+    seen = set()
+    out: list[str] = []
+    for pat in bams:
+        # If pattern contains wildcards, expand; otherwise treat as literal path
+        matches = glob.glob(pat) if any(ch in pat for ch in "*?[]") else ([pat] if os.path.exists(pat) else [])
+        if not matches:
+            print(f"[WARNING] No BAMs matched: {pat}")
+        for m in sorted(matches):
+            if m not in seen:
+                seen.add(m)
+                out.append(m)
+    return out
 
-def miRpyTest(bams: list[str], n: int = 10, region: str | None = None) -> int:
+
+def view_bam_head(bams: list[str], n: int = 10, region: str | None = None) -> int:
     """
     Print the first N mapped reads from each BAM file using bamnostic.
+    Supports wildcards like *.bam on Windows.
 
     If --region is given, a BAM index (.bai) must be present; otherwise we stream
     through the file sequentially (no index required).
     Output is TSV: read_name, locus, MAPQ[, NH if present]
     """
-    for bam in bams:
+    bam_paths = _expand_bam_patterns(bams)
+    if not bam_paths:
+        print("[ERROR] No BAM files found.")
+        return 1
+
+    for bam in bam_paths:
         try:
             bf = bn.AlignmentFile(bam, "rb")
         except Exception as e:
