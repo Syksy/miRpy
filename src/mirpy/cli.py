@@ -2,7 +2,7 @@ import argparse
 import importlib.resources as res
 import shutil
 
-from .tester import view_bam_head
+from .viewer import view_bam_head
 from .downloader import download_mirbase_gff
 from .gfftools import subset_gff_by_criteria
 from .count import count_matrix
@@ -13,12 +13,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # Test BAM files
-    if args.cmd == "test":
+    # Test by taking the top-view (head) of BAM files
+    if args.cmd in ["view", "head"]:
         return view_bam_head(args.bams, n=args.num, region=args.region)
 
     # Download miRBase GFF3 annotations
-    if args.cmd == "download":
+    elif args.cmd == "download":
         url = args.url or None
         try:
             out_path = download_mirbase_gff(args.dest, url=url or None)
@@ -32,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # Handling GFF3 subsetting
-    if args.cmd == "gff-subset":
+    elif args.cmd in ["subset", "gff-subset"]:
         try:
             n = subset_gff_by_criteria(
                 in_path=args.in_path,
@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # Example *.bam / *.bai (1k reads from 3 samples)
-    if args.cmd == "examples":
+    elif args.cmd == "examples":
         try:
             data_root = res.files("mirpy.data")
             examples = [f for f in data_root.iterdir() if f.name.endswith((".bam", ".bai"))]
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # Count matched hits
-    if args.cmd == "count":
+    elif args.cmd == "count":
         return count_matrix(
             bam_paths=args.bams,
             gff_path=args.gff,
@@ -94,8 +94,9 @@ def main(argv: list[str] | None = None) -> int:
             log_level=args.log_level,
             log_reads=args.log_reads,
         )
+    else:
+        parser.error("Unknown command")
 
-    parser.error("Unknown command")
     return 2
 
 
@@ -108,12 +109,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Sanity checking of BAM files
     t = sub.add_parser(
-        "head",
+        "view",
         help="Print first N reads from each BAM file (bamnostic-based)."
     )
-    t.add_argument("bams", nargs="+", help="One or more BAM files to test.")
-    t.add_argument("-n", "--num", type=int, default=10, help="Number of reads per BAM.")
-    t.add_argument("-r", "--region", help="Optional region like 'chr1:1000-2000'.")
+    t.add_argument(
+        "bams",
+        nargs="+",
+        help="One or more BAM files to test."
+    )
+    t.add_argument(
+        "-n", "--num",
+        type=int,
+        default=10,
+        help="Number of reads per BAM."
+    )
+    t.add_argument(
+        "-r", "--region",
+        help="Optional region like 'chr1:1000-2000'."
+    )
 
     # Support for downloading the latest miRBase GFF3
     d = sub.add_parser("download", help="Download miRBase GFF3 to a path.")
@@ -192,8 +205,16 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         help="One or more BAM files or glob patterns (e.g., sample*.namesorted.bam). Must be QNAME-sorted."
     )
-    c.add_argument("--gff", required=True, help="miRBase-like GFF3 (with miRNA + primary_transcript).")
-    c.add_argument("--out", required=True, help="Output TSV matrix path.")
+    c.add_argument(
+        "--gff",
+        required=True,
+        help="miRBase-like GFF3 (with miRNA + primary_transcript)."
+    )
+    c.add_argument(
+        "--out",
+        required=True,
+        help="Output TSV matrix path."
+    )
     c.add_argument(
         "--level",
         choices=["mature", "precursor"],
@@ -206,8 +227,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="exact",
         help="Which metric to report in the matrix (counts or CPM)."
     )
-    c.add_argument("--shift", type=int, default=4, help="Max |shift_start|+|shift_end| for approximate matches (default 4).")
-    c.add_argument("--max-nh", type=int, default=50, help="Skip reads with NH greater than this (default 50).")
+    c.add_argument(
+        "--shift",
+        type=int,
+        default=4,
+        help="Max |shift_start|+|shift_end| for approximate matches (default 4)."
+    )
+    c.add_argument(
+        "--max-nh",
+        type=int,
+        default=50,
+        help="Skip reads with NH greater than this (default 50)."
+    )
     c.add_argument(
         "--mode",
         choices=["auto", "qname", "nh-bucket"],
@@ -215,11 +246,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="How to read BAMs: 'qname' expects name-sorted; 'nh-bucket' streams unsorted using NH to know when a read is complete; "
              "'auto' tries qname else nh-bucket."
     )
-    c.add_argument("--log-level", default="INFO",
-                   choices=["ERROR", "WARNING", "INFO", "DEBUG"],
-                   help="Logging verbosity (default: INFO).")
-    c.add_argument("--log-reads", type=int, default=0,
-                   help="When DEBUG, log details for the first N reads per BAM (default: 0).")
+    # Debugging assistance
+    c.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["ERROR", "WARNING", "INFO", "DEBUG"],
+        help="Logging verbosity (default: INFO)."
+    )
+    c.add_argument(
+        "--log-reads",
+        type=int,
+        default=0,
+        help="When DEBUG, log details for the first N reads per BAM (default: 0)."
+    )
     return p
 
 if __name__ == "__main__":
