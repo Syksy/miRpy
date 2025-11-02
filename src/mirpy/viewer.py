@@ -13,6 +13,56 @@ def _get_read_name(aln) -> str:
             return v
     return "NA"
 
+def _get_read_full(aln) -> str:
+    # Iterate across all available fields
+    out = {}
+    for attr in dir(aln):
+        if attr.startswith("_"):
+            continue  # skip internals
+        try:
+            val = getattr(aln, attr)
+        except Exception:
+            continue
+        # Keep only primitive-like values (avoid methods)
+        if callable(val):
+            continue
+        out[attr] = val
+    # bamnostic stores optional tags like NM:i, AS:i, etc in aln.tags (a dict or list of tuples)
+    tags = {}
+    try:
+        # Newer bamnostic exposes aln.tags as dict-like; older as list of tuples
+        t = getattr(aln, "tags", None)
+        if isinstance(t, dict):
+            tags = t
+        elif isinstance(t, list):
+            tags = dict(t)
+        else:
+            # try the opt() interface
+            if hasattr(aln, "opt"):
+                for tag in ("AS", "NM", "NH", "MD", "XS", "YT", "XN", "XO", "XG"):
+                    try:
+                        tags[tag] = aln.opt(tag)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    if tags:
+        out["tags"] = tags
+
+    return out
+
+def _print_read_full(aln, delimiter: str = " | ") -> str:
+    outs = _get_read_full(aln)
+    parts = []
+    for k, v in sorted(outs.items()):
+        if k == "tags" and isinstance(v, dict):
+            tags_str = ", ".join(f"{tk}:{tv}" for tk, tv in sorted(v.items()))
+            parts.append(f"tags=[{tags_str}]")
+        else:
+            parts.append(f"{k}={v}")
+    return  delimiter.join(parts)
+
 def _expand_bam_patterns(bams: list[str]) -> list[str]:
     """Expand glob patterns (sample*.bam) cross-platform; keep order; de-dupe."""
     seen = set()
