@@ -274,7 +274,7 @@ def _count_qname_sorted(
                 break
             except Exception:
                 pass
-        genomic_matches = nh if isinstance(nh, int) else 1
+        genomic_matches = nh if isinstance(nh, int) else len(bucket)
         if genomic_matches > max_nh:
             if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
                 logger.debug(f"skip read: NH={genomic_matches} > max_nh={max_nh}")
@@ -327,7 +327,7 @@ def _count_qname_sorted(
                 a0 = next((a for a in bucket if not getattr(a, "is_unmapped", False)), None)
                 if a0 is not None:
                     chr_ = getattr(a0, "reference_name", None)
-                    st  = "-" if getattr(a0, "is_reverse", False) else "+"
+                    st = "-" if getattr(a0, "is_reverse", False) else "+"
                     has_chr = chr_ in premiR_index
                     has_str = has_chr and (st in premiR_index[chr_])
                     logger.debug(f"no match: chr={chr_} in_gff={has_chr}, strand_ok={has_str}, "
