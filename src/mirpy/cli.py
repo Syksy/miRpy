@@ -140,6 +140,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show all available fields per alingment in the BAMs"
     )
+    t.add_argument(
+        "--delimiter",
+        default=" | ",
+        help="Delimiter for printing between key=value pairs when using --full (default: ' | ')."
+    )
 
     # Support for downloading the latest miRBase GFF3
     d = sub.add_parser("download", help="Download miRBase GFF3 to a path.")
