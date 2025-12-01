@@ -61,7 +61,7 @@ def _print_read_full(aln, delimiter: str = " | ") -> str:
             parts.append(f"tags=[{tags_str}]")
         else:
             parts.append(f"{k}={v}")
-    return  delimiter.join(parts)
+    return delimiter.join(parts)
 
 def _expand_bam_patterns(bams: list[str]) -> list[str]:
     """Expand glob patterns (sample*.bam) cross-platform; keep order; de-dupe."""
@@ -79,7 +79,13 @@ def _expand_bam_patterns(bams: list[str]) -> list[str]:
     return out
 
 
-def view_bam_head(bams: list[str], n: int = 10, region: str | None = None) -> int:
+def view_bam_head(
+        bams: list[str],
+        n: int = 10,
+        region: str | None = None,
+        full: bool = False,
+        delimiter: str = " | "
+) -> int:
     """
     Print the first N mapped reads from each BAM file using bamnostic.
     Supports wildcards like *.bam on Windows.
@@ -123,30 +129,35 @@ def view_bam_head(bams: list[str], n: int = 10, region: str | None = None) -> in
 
             printed = 0
             for aln in it:
-                if getattr(aln, "is_unmapped", False):
-                    continue
+                # Print all alignment info
+                if full:
+                    print(_print_read_full(aln, delimiter=delimiter))
+                # Concise printing (default)
+                else:
+                    if getattr(aln, "is_unmapped", False):
+                        continue
 
-                name = _get_read_name(aln)
-                rname = getattr(aln, "reference_name", "")
-                start_1b = (getattr(aln, "pos", 0) or 0) + 1  # bamnostic uses 0-based pos
-                end_1b = getattr(aln, "reference_end", start_1b)
-                strand = "-" if getattr(aln, "is_reverse", False) else "+"
-                mapq = getattr(aln, "mapq", "")
+                    name = _get_read_name(aln)
+                    rname = getattr(aln, "reference_name", "")
+                    start_1b = (getattr(aln, "pos", 0) or 0) + 1  # bamnostic uses 0-based pos
+                    end_1b = getattr(aln, "reference_end", start_1b)
+                    strand = "-" if getattr(aln, "is_reverse", False) else "+"
+                    mapq = getattr(aln, "mapq", "")
 
-                # NH tag (optional)
-                nh_s = ""
-                try:
-                    nh = aln.opt("NH")
-                    nh_s = f"\tNH={nh}"
-                except Exception:
-                    pass
+                    # NH tag (optional)
+                    nh_s = ""
+                    try:
+                        nh = aln.opt("NH")
+                        nh_s = f"\tNH={nh}"
+                    except Exception:
+                        pass
 
-                # TSV line (read_name  locus  MAPQ  [NH])
-                print(f"{name}\t{rname}:{start_1b}-{end_1b}({strand})\tMAPQ={mapq}{nh_s}")
+                    # TSV line (read_name  locus  MAPQ  [NH])
+                    print(f"{name}\t{rname}:{start_1b}-{end_1b}({strand})\tMAPQ={mapq}{nh_s}")
 
-                printed += 1
-                if printed >= n:
-                    break
+                    printed += 1
+                    if printed >= n:
+                        break
 
             if printed == 0:
                 if region:

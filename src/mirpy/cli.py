@@ -14,8 +14,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # Test by taking the top-view (head) of BAM files
-    if args.cmd in ["view", "head"]:
-        return view_bam_head(args.bams, n=args.num, region=args.region)
+    if args.cmd == "view":
+        return view_bam_head(
+            args.bams,
+            n=args.num,
+            region=args.region,
+            full=args.full,
+            delimiter=args.delimiter
+        )
 
     # Download miRBase GFF3 annotations
     elif args.cmd == "download":
@@ -32,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     # Handling GFF3 subsetting
-    elif args.cmd in ["subset", "gff-subset"]:
+    elif args.cmd == "subset":
         try:
             n = subset_gff_by_criteria(
                 in_path=args.in_path,
@@ -91,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             shift=args.shift,
             max_nh=args.max_nh,
             mode=args.mode,
+            multi=args.multi,
             log_level=args.log_level,
             log_reads=args.log_reads,
         )
@@ -110,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Sanity checking of BAM files
     t = sub.add_parser(
         "view",
+        aliases=["head"],
         help="Print first N reads from each BAM file (bamnostic-based)."
     )
     t.add_argument(
@@ -127,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-r", "--region",
         help="Optional region like 'chr1:1000-2000'."
     )
+    t.add_argument(
+        "--full",
+        action="store_true",
+        help="Show all available fields per alingment in the BAMs"
+    )
 
     # Support for downloading the latest miRBase GFF3
     d = sub.add_parser("download", help="Download miRBase GFF3 to a path.")
@@ -142,7 +155,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Subsetting and processing GFF3 (tab-separated miRNA-annotations)
     g = sub.add_parser(
-        "gff-subset",
+        "subset",
+        aliases=["gff-subset"],
         help="Subset a GFF3 file based on a column-matching criterion (default: keep only miRNA features).",
     )
     g.add_argument(
