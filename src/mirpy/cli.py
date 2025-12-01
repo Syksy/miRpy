@@ -198,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     # count (matrix over multiple BAMs)
     c = sub.add_parser(
         "count",
-        help="Count mature/precursor miRNA across one or more name-sorted BAMs; output matrix."
+        help="Count mature/precursor miRNA across one or more name-sorted BAMs; produces an output matrix."
     )
     c.add_argument(
         "bams",
@@ -208,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--gff",
         required=True,
-        help="miRBase-like GFF3 (with miRNA + primary_transcript)."
+        help="miRBase-like GFF3 (with miRNA + primary_transcript). See also command 'download'."
     )
     c.add_argument(
         "--out",
@@ -245,6 +245,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="How to read BAMs: 'qname' expects name-sorted; 'nh-bucket' streams unsorted using NH to know when a read is complete; "
              "'auto' tries qname else nh-bucket."
+    )
+    c.add_argument(
+        "--multi",
+        choices=["unique", "fractional"], # TODO: mature-fractional
+        default="unique",
+        help="Strategy on how to handle multiple mapped reads; 'unique' conserves only uniquely mapped reads, 'fractional' "
+             "assigns proportional abundance to each mapped location as per 1 / mapped_locations."
     )
     # Debugging assistance
     c.add_argument(

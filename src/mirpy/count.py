@@ -178,6 +178,7 @@ def _count_one_bam(
     shift: int,
     max_nh: int,
     mode: str = "qname",  # "qname", "nh-bucket", or "auto"
+    multi: str = "unique", # Mode for handling multi-matched hits
     logger: logging.Logger | None = None,
     log_reads: int = 0
 ) -> Tuple[Dict[str, List[int]], int]:
@@ -227,6 +228,7 @@ def _count_qname_sorted(
     *,
     shift: int,
     max_nh: int,
+    multi: str = "unique", # Mode for handling multi-matched hits
     logger: logging.Logger | None = None,
     log_reads: int = 0,
 ) -> Tuple[Dict[str, List[int]], int]:
@@ -260,9 +262,7 @@ def _count_qname_sorted(
     reads_logged = 0  # limit DEBUG detail to the first N reads
 
     def process_bucket():
-        """Apply Perl-like logic to a single read's alignments."""
-        nonlocal reads_logged
-        nonlocal mature_counts
+        nonlocal reads_logged, mature_counts
         if not bucket:
             return
 
@@ -339,28 +339,43 @@ def _count_qname_sorted(
         unique = list(matched_names.keys())
         single = (len(unique) == 1)
 
-        # If all genomic hits are mature and agree on a single mature, award exact/approx (+ nonspecific per Perl)
-        if sum_matches == genomic_matches and single:
-            for k in exact_tmp.keys():
-                ensure(k, mature_counts)
-                mature_counts[k][0] += 1  # exact
-                mature_counts[k][1] += 1  # approx (also incremented for exact)
-                mature_counts[k][2] += 1  # nonspecific (Perl increments all three)
-            for k in approx_tmp.keys():
-                ensure(k, mature_counts)
-                mature_counts[k][1] += 1  # approx
-                mature_counts[k][2] += 1  # nonspecific
-        else:
-            # Not all hits mature OR ambiguous w.r.t mature name:
-            # If single mature name, count as nonspecific only (as in Perl).
-            if single:
+        def add(name: str, e: float, a: float, ns: float):
+            ensure(name, mature_counts)
+            mature_counts[name][0] += e  # exact
+            mature_counts[name][1] += a  # approx (also incremented for exact)
+            mature_counts[name][2] += ns # nonspecific (Perl increments all three)
+
+        # Previous unique mapping approach
+        if multi == "unqiue":
+            # If all genomic hits are mature and agree on a single mature, award exact/approx (+ nonspecific per Perl)
+            if sum_matches == genomic_matches and single:
                 for k in exact_tmp.keys():
-                    ensure(k, mature_counts)
-                    mature_counts[k][2] += 1
+                    add(k, 1.0, 1.0, 1.0)
                 for k in approx_tmp.keys():
-                    ensure(k, mature_counts)
-                    mature_counts[k][2] += 1
-            # If multiple mature names, then ignore the read entirely (Perl behavior).
+                    add(k, 0.1, 1.0, 1.0)
+            else:
+                # Not all hits mature OR multiple mature names
+                if single:
+                    for k in exact_tmp.keys():
+                        add(k, 0.0, 0.0, 1.0)
+                    for k in approx_tmp.keys():
+                        add(k, 0.0, 0.0, 1.0)
+        # Newer fractional mapping approach
+        elif multi == "fractional":
+            # Distribute 1 / genomic_matches across found matched mature names
+            if unique:
+                w = 1.0 / float(genomic_matches)
+                for k in exact_tmp.keys():
+                    add(k, w, w, w)
+                for k in approx_tmp.keys():
+                    add(k, 0.0, w, w)
+        # TODO, mature-fraction
+        elif multi == "mature-fraction":
+            if logger:
+                logger.warning(f"Feature TODO '{multi}'")
+        # Unknown mapping strategy
+        else:
+            logger.error("Unknown mapping strategy '{multi}' given as multi-parameter")
 
     progress_every = 100000
     # Single streaming pass (names are contiguous in QNAME-sorted BAM)
@@ -397,6 +412,7 @@ def _count_unsorted_nh_bucket(
     *,
     shift: int,
     max_nh: int,
+    multi: str = "unique", # Mode for handling multi-matched hits
     logger: logging.Logger | None = None,
     log_reads: int = 0,
 ) -> Tuple[Dict[str, List[int]], int]:
@@ -538,6 +554,7 @@ def count_matrix(
     shift: int = 4,
     max_nh: int = 50,
     mode: str = "auto",
+    multi: str = "unique", # Mode for handling multi-matched hits
     log_level: str = "INFO",
     log_reads: int = 0,
 ) -> int:
@@ -571,6 +588,7 @@ def count_matrix(
                 shift=shift,
                 max_nh=max_nh,
                 mode=mode,
+                multi=multi,
                 logger=logger,
                 log_reads=log_reads,
             )
