@@ -116,10 +116,16 @@ def load_mirbase_like_gff(
         logger.info(f"GFF loaded: {len(prec_by_id)} precursors; {len(mature_index)} mature miRNAs")
         # Show chromosomes/strands for context
         if logger.isEnabledFor(logging.DEBUG):
-            for i, (chr_, strands) in enumerate(premiR_index.items()):
-                #if i >= 5: break
-                for st, precs in strands.items():
-                    logger.debug(f"  chr={chr_} strand={st}: {len(precs)} precursors")
+            logger.debug("GFF overview:")
+            for chr_, strands in sorted(premiR_index.items()):
+                for str, precs in strands.items():
+                    logger.debug(f"  GFF chr={chr_!r} strand={st}: {len(precs)} precursors")
+            some_prec = list(prec_by_id.values())[:5]
+            for p in some_prec:
+                logger.debug(f"  Example precursor: {p.id} {p.chr}:{p.start}-{p.end}({p.strand}) name={p.name}")
+            some_mat = list(mature_index.values())[:5]
+            for m in some_mat:
+                logger.debug(f"  Example mature: {m.name} {m.precursor_id} {m.start}-{m.end}")
 
     return premiR_index, mature_index, mature_to_precursor_name
 
@@ -241,6 +247,14 @@ def _count_qname_sorted(
       mature_counts[name] -> [exact, approx, nonspecific]
       aligned_reads: number of mapped alignments observed (CPM denominator upstream)
     """
+    # Debug counts
+    reason_no_chr = 0
+    reason_no_strand = 0
+    reason_no_prec_overlap = 0
+    reason_distance_too_big = 0
+    reason_nh_too_big = 0
+    reason_multi_mature_conflict = 0
+
     def ensure(name: str, table: Dict[str, List[int]]):
         if name not in table:
             table[name] = [0, 0, 0]
@@ -249,7 +263,15 @@ def _count_qname_sorted(
         if logger.isEnabledFor(logging.DEBUG):
             try:
                 with bn.AlignmentFile(str(bam_path), "rb") as btmp:
+                    refs = list(getattr(btmp, "references", []))
                     logger.debug(f"BAM references: {list(getattr(btmp, 'references', []))[:10]}")
+                    # Check BAM vs GFF contig overlap
+                    gff_contigs = set(premiR_index.keys())
+                    bam_contigs = set(refs)
+                    only_gff = sorted(gff_contigs - bam_contigs)
+                    only_bam = sorted(bam_contigs - gff_contigs)
+                    logger.debug(f"Contigs in GFF not in BAM (first 20): {only_gff[:20]}")
+                    logger.debug(f"Contigs in BAM not in GFF (first 20): {only_bam[:20]}")
             except Exception:
                 pass
 
@@ -263,6 +285,9 @@ def _count_qname_sorted(
 
     def process_bucket():
         nonlocal reads_logged, mature_counts
+        # Debug counts
+        nonlocal reason_no_chr, reason_no_strand, reason_no_prec_overlap, reason_distance_too_big, \
+            reason_nh_too_big, reason_multi_mature_conflict
         if not bucket:
             return
 
@@ -276,6 +301,7 @@ def _count_qname_sorted(
                 pass
         genomic_matches = nh if isinstance(nh, int) else len(bucket)
         if genomic_matches > max_nh:
+            reason_nh_too_big += 1
             if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
                 logger.debug(f"skip read: NH={genomic_matches} > max_nh={max_nh}")
             return
@@ -307,11 +333,36 @@ def _count_qname_sorted(
             if not pre_list:
                 continue
 
+            # Debugging
+            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                logger.debug(
+                    f"{_get_read_name(aln)}: chr={chr_!r}, strand={strand}, "
+                    f"start={start_1b}, end={end_1b}, NM={nm}, non_pm={non_pm}"
+                )
+            pre_list = premiR_index.get(chr_, {}).get(strand, [])
+            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                logger.debug(f"{_get_read_name(aln)}: {len(pre_list)} candidate precursors on chr/strand")
+            if not pre_list:
+                if chr_ not in premiR_index:
+                    reason_no_chr += 1
+                else:
+                    reason_no_strand += 1
+                continue
+
             # Find overlapping precursor(s), then compare to its mature(s)
+            hit_any_prec = False
             for prec in pre_list:
                 if start_1b <= prec.end and end_1b >= prec.start:
+                    hit_any_prec = True
                     for m in prec.matures:
                         d = _distance_to_mature(start_1b, end_1b, m)
+                        # Debugging
+                        if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                            logger.debug(
+                                f"{_get_read_name(aln)}: overlaps precursor {prec.id} "
+                                f"({prec.chr}:{prec.start}-{prec.end}), "
+                                f"mature={m.name} [{m.start}-{m.end}], d={d}"
+                            )
                         if non_pm == 0 and d == 0:
                             exact_tmp[m.name] = None
                             matched_names[m.name] = None
@@ -320,6 +371,10 @@ def _count_qname_sorted(
                             approx_tmp[m.name] = None
                             matched_names[m.name] = None
                             sum_matches += 1
+                        else:
+                            reason_distance_too_big += 1
+            if not hit_any_prec:
+                reason_no_prec_overlap += 1
 
         if sum_matches == 0:
             if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
@@ -339,6 +394,14 @@ def _count_qname_sorted(
         unique = list(matched_names.keys())
         single = (len(unique) == 1)
 
+        if not single and sum_matches > 0:
+            reason_multi_mature_conflict += 1
+            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                logger.debug(
+                    f"{_get_read_name(bucket[0])}: matches multiple matures {unique}, "
+                    f"sum_matches={sum_matches}, genomic_matches={genomic_matches}; read ignored."
+                )
+
         def add(name: str, e: float, a: float, ns: float):
             ensure(name, mature_counts)
             mature_counts[name][0] += e  # exact
@@ -346,7 +409,7 @@ def _count_qname_sorted(
             mature_counts[name][2] += ns # nonspecific (Perl increments all three)
 
         # Previous unique mapping approach
-        if multi == "unqiue":
+        if multi == "unique":
             # If all genomic hits are mature and agree on a single mature, award exact/approx (+ nonspecific per Perl)
             if sum_matches == genomic_matches and single:
                 for k in exact_tmp.keys():
@@ -402,8 +465,18 @@ def _count_qname_sorted(
     process_bucket()
 
     if logger:
-        logger.info(f"Done {bam_path}: aligned={aligned_reads}, features_matched={len(mature_counts)}")
-
+        logger.info(
+            f"Done {bam_path}: aligned={aligned_reads}, "
+            f"features_matched={len(mature_counts)}"
+        )
+        logger.debug(
+            f"Reasons (QNAME) for non-matching reads in {bam_path}: "
+            f"no_chr={reason_no_chr}, no_strand={reason_no_strand}, "
+            f"no_prec_overlap={reason_no_prec_overlap}, "
+            f"distance_too_big={reason_distance_too_big}, "
+            f"nh_too_big={reason_nh_too_big}, "
+            f"multi_mature_conflict={reason_multi_mature_conflict}"
+        )
     return mature_counts, aligned_reads
 
 def _count_unsorted_nh_bucket(
@@ -422,12 +495,28 @@ def _count_unsorted_nh_bucket(
         if logger.isEnabledFor(logging.DEBUG):
             try:
                 with bn.AlignmentFile(str(bam_path), "rb") as btmp:
-                    logger.debug(f"BAM references: {list(getattr(btmp, 'references', []) )[:10]}")
+                    refs = list(getattr(btmp, "references", []))
+                    logger.debug(f"BAM references: {list(getattr(btmp, 'references', []))[:10]}")
+                    # Check BAM vs GFF contig overlap
+                    gff_contigs = set(premiR_index.keys())
+                    bam_contigs = set(refs)
+                    only_gff = sorted(gff_contigs - bam_contigs)
+                    only_bam = sorted(bam_contigs - gff_contigs)
+                    logger.debug(f"Contigs in GFF not in BAM (first 20): {only_gff[:20]}")
+                    logger.debug(f"Contigs in BAM not in GFF (first 20): {only_bam[:20]}")
             except Exception:
                 pass
 
     mature_counts: Dict[str, List[int]] = {}
     aligned_reads = 0
+
+    # Debug counts
+    reason_no_chr = 0
+    reason_no_strand = 0
+    reason_no_prec_overlap = 0
+    reason_distance_too_big = 0
+    reason_nh_too_big = 0
+    reason_multi_mature_conflict = 0
 
     def ensure(name: str):
         if name not in mature_counts:
@@ -439,12 +528,16 @@ def _count_unsorted_nh_bucket(
     reads_logged = 0  # limit DEBUG detail to the first N reads
 
     def process_bucket(qn: str):
-        nonlocal reads_logged
-        nonlocal mature_counts
+        nonlocal reads_logged, mature_counts
+        # Debug counts
+        nonlocal reason_no_chr, reason_no_strand, reason_no_prec_overlap, reason_distance_too_big, \
+            reason_nh_too_big, reason_multi_mature_conflict
+
         bucket = buckets.pop(qn, [])
         nh = nh_by_read.pop(qn, None)
         genomic_matches = nh if isinstance(nh, int) else len(bucket)
         if genomic_matches > max_nh:
+            reason_nh_too_big += 1
             if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
                 logger.debug(f"{qn}: skip NH={genomic_matches} > max_nh={max_nh}")
             return
@@ -469,15 +562,41 @@ def _count_unsorted_nh_bucket(
                 pass
             non_pm = 0 if (nm == 0) else 1
 
+            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                logger.debug(
+                    f"{_get_read_name(aln)}: chr={chr_!r}, strand={strand}, "
+                    f"start={start_1b}, end={end_1b}, NM={nm}, non_pm={non_pm}"
+                )
+
             pre_list = premiR_index.get(chr_, {}).get(strand, [])
+            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                logger.debug(f"{_get_read_name(aln)}: {len(pre_list)} candidate precursors on chr/strand")
+            hit_any_prec = False
             for prec in pre_list:
                 if start_1b <= prec.end and end_1b >= prec.start:
+                    hit_any_prec = True
                     for m in prec.matures:
                         d = _distance_to_mature(start_1b, end_1b, m)
+                        if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                            logger.debug(
+                                f"{_get_read_name(aln)}: overlaps precursor {prec.id} "
+                                f"({prec.chr}:{prec.start}-{prec.end}), "
+                                f"mature={m.name} [{m.start}-{m.end}], d={d}"
+                            )
                         if non_pm == 0 and d == 0:
                             exact_tmp[m.name] = None; matched_names[m.name] = None; sum_matches += 1
                         elif d <= shift:
                             approx_tmp[m.name] = None; matched_names[m.name] = None; sum_matches += 1
+                        else:
+                            reason_distance_too_big += 1
+            if not hit_any_prec:
+                reason_no_prec_overlap += 1
+            if not pre_list:
+                if chr_ not in premiR_index:
+                    reason_no_chr += 1
+                else:
+                    reason_no_strand += 1
+                continue
 
         if sum_matches == 0:
             if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
@@ -488,12 +607,23 @@ def _count_unsorted_nh_bucket(
                     st = "-" if getattr(a0, "is_reverse", False) else "+"
                     has_chr = chr_ in premiR_index
                     has_str = has_chr and (st in premiR_index.get(chr_, {}))
-                    logger.debug(f"{qn}: no match: chr={chr_} in_gff={has_chr}, strand_ok={has_str}, "
-                                 f"start/end={_aln_locus_1b(a0)}")
+                    logger.debug(
+                        f"{_get_read_name(a0)}: no mature match. "
+                        f"chr={chr_!r}, in_gff={has_chr}, strand_ok={has_str}, "
+                        f"start/end={_aln_locus_1b(a0)}"
+                    )
             return
 
         unique = list(matched_names.keys())
         single = (len(unique) == 1)
+
+        if not single and sum_matches > 0:
+            reason_multi_mature_conflict += 1
+            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+                logger.debug(
+                    f"{_get_read_name(bucket[0])}: matches multiple matures {unique}, "
+                    f"sum_matches={sum_matches}, genomic_matches={genomic_matches}; read ignored."
+                )
 
         if sum_matches == genomic_matches and single:
             for k in exact_tmp.keys():
@@ -540,8 +670,18 @@ def _count_unsorted_nh_bucket(
         process_bucket(qn)
 
     if logger:
-        logger.info(f"Done {bam_path}: aligned={aligned_reads}, features_matched={len(mature_counts)}")
-
+        logger.info(
+            f"Done {bam_path}: aligned={aligned_reads}, "
+            f"features_matched={len(mature_counts)}"
+        )
+        logger.debug(
+            f"Reasons (QNAME) for non-matching reads in {bam_path}: "
+            f"no_chr={reason_no_chr}, no_strand={reason_no_strand}, "
+            f"no_prec_overlap={reason_no_prec_overlap}, "
+            f"distance_too_big={reason_distance_too_big}, "
+            f"nh_too_big={reason_nh_too_big}, "
+            f"multi_mature_conflict={reason_multi_mature_conflict}"
+        )
     return mature_counts, aligned_reads
 
 def count_matrix(
