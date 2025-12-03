@@ -6,6 +6,7 @@ from .viewer import view_bam_head
 from .downloader import download_mirbase_gff
 from .gfftools import subset_gff_by_criteria
 from .count import count_matrix
+from .map import map_matrix
 
 from pathlib import Path
 
@@ -86,13 +87,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] {e}")
             return 1
 
-    # Count matched hits
+    # Count matched hits (precursor friendly)
     elif args.cmd == "count":
         return count_matrix(
             bam_paths=args.bams,
             gff_path=args.gff,
             out_path=args.out,
             level=args.level,
+            metric=args.metric,
+            shift=args.shift,
+            max_nh=args.max_nh,
+            mode=args.mode,
+            multi=args.multi,
+            log_level=args.log_level,
+            log_reads=args.log_reads,
+        )
+
+    # Map to mature miRNA
+    elif args.cmd == "map":
+        return map_matrix(
+            bam_paths=args.bams,
+            gff_path=args.gff,
+            out_path=args.out,
             metric=args.metric,
             shift=args.shift,
             max_nh=args.max_nh,
@@ -235,12 +251,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output TSV matrix path."
     )
     c.add_argument(
-        "--level",
-        choices=["mature", "precursor"],
-        default="mature",
-        help="Row level: 'mature' (default) or 'precursor'."
-    )
-    c.add_argument(
         "--metric",
         choices=["exact", "approx", "nonspecific", "exact_cpm", "approx_cpm", "nonspecific_cpm"],
         default="exact",
@@ -285,7 +295,75 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="When DEBUG, log details for the first N reads per BAM (default: 0)."
     )
+
+    # Mapping mature miRNA (matrix over multiple BAMs)
+    m = sub.add_parser(
+        "map",
+        help="Map mature miRNA across one or more name-sorted BAMs; produces an output matrix."
+    )
+    m.add_argument(
+        "bams",
+        nargs="+",
+        help="One or more BAM files or glob patterns (e.g., sample*.namesorted.bam). Preferably QNAME-sorted."
+    )
+    m.add_argument(
+        "--gff",
+        required=True,
+        help="miRBase-like GFF3 (with miRNA subsetting). See also command 'download'."
+    )
+    m.add_argument(
+        "--out",
+        required=True,
+        help="Output TSV matrix path."
+    )
+    m.add_argument(
+        "--metric",
+        choices=["exact", "approx", "nonspecific", "exact_cpm", "approx_cpm", "nonspecific_cpm"],
+        default="exact",
+        help="Which metric to report in the matrix (counts or CPM)."
+    )
+    m.add_argument(
+        "--shift",
+        type=int,
+        default=4,
+        help="Max |shift_start|+|shift_end| for approximate matches (default 4)."
+    )
+    m.add_argument(
+        "--max-nh",
+        type=int,
+        default=50,
+        help="Skip reads with NH greater than this (default 50)."
+    )
+    m.add_argument(
+        "--mode",
+        choices=["auto", "qname", "nh-bucket"],
+        default="auto",
+        help="How to read BAMs: 'qname' expects name-sorted; 'nh-bucket' streams unsorted using NH to know when a read is complete; "
+             "'auto' tries qname else nh-bucket."
+    )
+    m.add_argument(
+        "--multi",
+        choices=["unique", "fractional"], # TODO: mature-fractional
+        default="fractional",
+        help="Strategy on how to handle multiple mapped reads; 'unique' conserves only uniquely mapped reads, 'fractional' "
+             "assigns proportional abundance to each mapped location as per 1 / mapped_locations."
+    )
+    # Debugging assistance
+    m.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["ERROR", "WARNING", "INFO", "DEBUG"],
+        help="Logging verbosity (default: INFO)."
+    )
+    m.add_argument(
+        "--log-reads",
+        type=int,
+        default=0,
+        help="When DEBUG, log details for the first N reads per BAM (default: 0)."
+    )
+
     return p
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
