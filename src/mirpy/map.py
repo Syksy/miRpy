@@ -8,7 +8,7 @@ import os
 import glob
 import logging
 import bamnostic as bn
-
+import traceback
 
 @dataclass
 class Mature:
@@ -139,8 +139,14 @@ def _aln_locus_1b(aln) -> Tuple[int, int]:
     return start_1b, end_1b
 
 
+# Debugging; this compares read against absolute known miRNA site start/end boundaries
 def _distance_to_mature(start_1b: int, end_1b: int, m: Mature) -> int:
     return abs(m.start - start_1b) + abs(m.end - end_1b)
+
+
+# Debugging; this compares against how much bases the aligned read crosses over the known miRNA boundaries
+def _distance_out_mature(start_1b: int, end_1b: int, m: Mature) -> int:
+    return max(0, m.start - start_1b) + max(0, end_1b - m.end)
 
 
 def _get_read_name(aln) -> str:
@@ -357,7 +363,8 @@ def _map_qname_sorted(
                 # overlap check
                 if end_1b < m.start or start_1b > m.end:
                     continue
-                d = _distance_to_mature(start_1b, end_1b, m)
+                #d = _distance_to_mature(start_1b, end_1b, m)
+                d = _distance_out_mature(start_1b, end_1b, m)
                 if non_pm == 0 and d == 0:
                     exact_tmp[m.name] = None
                     matched_names[m.name] = None
@@ -554,7 +561,8 @@ def _map_unsorted_nh_bucket(
             for m in cand_matures:
                 if end_1b < m.start or start_1b > m.end:
                     continue
-                d = _distance_to_mature(start_1b, end_1b, m)
+                #d = _distance_to_mature(start_1b, end_1b, m)
+                d = _distance_out_mature(start_1b, end_1b, m)
                 if non_pm == 0 and d == 0:
                     exact_tmp[m.name] = None
                     matched_names[m.name] = None
@@ -707,8 +715,20 @@ def map_matrix(
             )
             per_sample_counts.append(mc)
             per_sample_aligned.append(aligned)
+            if logger.isEnabledFor(logging.DEBUG):
+                nonzero_exact = sum(1 for v in mc.values() if v[0] > 0)
+                nonzero_approx = sum(1 for v in mc.values() if v[1] > 0)
+                nonzero_ns = sum(1 for v in mc.values() if v[2] > 0)
+                logger.debug(
+                    f"{b}: aligned={aligned}, features={len(mc)}, "
+                    f"nonzero_exact={nonzero_exact}, "
+                    f"nonzero_approx={nonzero_approx}, "
+                    f"nonzero_nonspecific={nonzero_ns}, "
+                    f"multi={multi}"
+                )
         except Exception as e:
             logger.error(f"{b}: {e}")
+            logger.debug("Traceback after Exception on _map_one_bam:\n" + traceback.format_exc())
             return 1
 
     # Feature set = all mature names observed
