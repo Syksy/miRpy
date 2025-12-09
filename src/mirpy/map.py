@@ -365,12 +365,11 @@ def _map_qname_sorted(
                     continue
                 #d = _distance_to_mature(start_1b, end_1b, m)
                 d = _distance_out_mature(start_1b, end_1b, m)
-                if non_pm == 0 and d == 0:
-                    exact_tmp[m.name] = None
-                    matched_names[m.name] = None
-                    sum_matches += 1
-                    local_hit = True
-                elif d <= shift:
+                if d <= shift:
+                    # Perfect hit
+                    if non_pm == 0 and d == 0:
+                        exact_tmp[m.name] = None
+                    # Otherwise approximate hit, all other logic appended on top of perfect hit
                     approx_tmp[m.name] = None
                     matched_names[m.name] = None
                     sum_matches += 1
@@ -563,12 +562,11 @@ def _map_unsorted_nh_bucket(
                     continue
                 #d = _distance_to_mature(start_1b, end_1b, m)
                 d = _distance_out_mature(start_1b, end_1b, m)
-                if non_pm == 0 and d == 0:
-                    exact_tmp[m.name] = None
-                    matched_names[m.name] = None
-                    sum_matches += 1
-                    local_hit = True
-                elif d <= shift:
+                if d <= shift:
+                    # Perfect hit
+                    if non_pm == 0 and d == 0:
+                        exact_tmp[m.name] = None
+                    # Otherwise approximate hit, all other logic appended on top of perfect hit
                     approx_tmp[m.name] = None
                     matched_names[m.name] = None
                     sum_matches += 1
