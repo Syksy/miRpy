@@ -24,6 +24,7 @@ def _first_line_text(path: Path) -> str:
 def download_mirbase_gff(
         dest: str | os.PathLike,
         *,
+        force: str | None = True,
         url: str | None = None,
 ) -> Path:
     """

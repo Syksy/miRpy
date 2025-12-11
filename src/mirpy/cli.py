@@ -28,7 +28,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "download":
         url = args.url or None
         try:
-            out_path = download_mirbase_gff(args.dest, url=url or None)
+            out_path = download_mirbase_gff(
+                args.dest,
+                url=url or None,
+                force=args.force or None
+            )
             print(f"Downloaded miRBase GFF to: {out_path}")
             return 0
         except FileExistsError as e:
@@ -172,6 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--url",
         default=None,
         help="Optional alternate URL (defaults to miRBase CURRENT hsa.gff3).",
+    )
+    d.add_argument(
+        "--force",
+        default=True,
+        help="Whether destination files are potentially overwritten (default: True).",
     )
 
     # Subsetting and processing GFF3 (tab-separated miRNA-annotations)
