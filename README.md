@@ -31,11 +31,12 @@ head hsa.gff3 -n 20
 
 Notice that this also includes miRNA precursors (e.g. miRNA_primary_transcript).
 
-Extract mature miRNA sequences with (processes tab-separated gff3 
-file with a matching criteria from a specified column):
+Extract mature miRNA sequences with from the tab-separated gff3 
+file with a matching criteria from the 2nd column (has to match 'miRNA' or the
+row is omitted):
 
 ```commandline
-mirpy gff-subset --in hsa.gff3 --out hsa_mature.gff3 --col 2 --criteria miRNA
+mirpy subset --in hsa.gff3 --out hsa_mature.gff3 --col 2 --criteria miRNA
 head hsa_mature.gff -n 20
 ```
 
@@ -50,13 +51,17 @@ ls sample*.bam
 
 Check the headers of the BAMs for sanity checking (checking a head of the BAMs): 
 ```commandline
-mirpy test sample*.bam
+mirpy head sample*.bam
 ```
 
-### Create annotation count matrices
+### Map aligned reads to the miRBase annotations
+
+Test mapping aligned files to the miRBase mature MRI database
 
 ```commandline
-mirpy count sample*.bam --gff hsa_mature.gff3 --out samples_count.tsv --level mature --metric exact
+mirpy map sample*.bam --gff hsa_mature.gff3 --out samples_map.tsv --metric approx --shift 4 --multi fractional
 ```
 
 ## Acknowledgements
+
+<TODO>
