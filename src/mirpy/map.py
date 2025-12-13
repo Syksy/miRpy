@@ -11,6 +11,29 @@ import bamnostic as bn
 import traceback
 from miRpyClasses import AlignmentData, Mature
 
+
+def _extract_alignment_data(aln) -> Optional[AlignmentData]:
+    """Extract only necessary data from bamnostic alignment to reduce memory."""
+    if getattr(aln, "is_unmapped", False):
+        return None
+
+    chr_ = getattr(aln, "reference_name", None)
+    if chr_ is None:
+        return None
+
+    # bamnostic uses 'pos' (0-based) instead of 'reference_start'
+    start_1b = (getattr(aln, "pos", 0) or 0) + 1
+    end_1b = getattr(aln, "reference_end", start_1b)
+    is_reverse = getattr(aln, "is_reverse", False)
+
+    try:
+        nm = aln.opt("NM")
+    except (KeyError, AttributeError):
+        nm = 1  # Assume non-perfect match if NM tag missing
+
+    return AlignmentData(chr_, start_1b, end_1b, is_reverse, nm)
+
+
 def _make_logger(level: str) -> logging.Logger:
     lvl = getattr(logging, level.upper(), logging.INFO)
     logger = logging.getLogger("mirpy.map")
@@ -178,11 +201,6 @@ def _map_one_bam(
 ) -> Tuple[Dict[str, List[float]], int]:
     """
     Map per mature for a single BAM (mature-only model).
-
-    Returns (mature_counts, aligned_reads).
-
-    mature_counts[name] -> [exact, approx, nonspecific] (floats, to support fractional mapping)
-    aligned_reads        -> number of mapped alignments observed
     """
     try:
         test = bn.AlignmentFile(str(bam_path), "rb")
@@ -277,7 +295,7 @@ def _map_qname_sorted(
             except Exception:
                 pass
 
-    mature_counts: Dict[str, List[float]] = {}
+    mature_counts: Dict[str, List[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
     aligned_reads = 0
 
     # debugging counters
@@ -288,14 +306,13 @@ def _map_qname_sorted(
     reason_distance_too_big = 0
     reason_multi_conflict = 0
 
-    def ensure(name: str):
-        if name not in mature_counts:
-            mature_counts[name] = [0.0, 0.0, 0.0]
-
     current_qname: Optional[str] = None
-    bucket: List = []
+    # Optimizing buckets to contain only the essential alignment data
+    bucket: List[AlignmentData] = []
+    nh_value: Optional[int] = None
     reads_logged = 0
-    progress_every = 100000
+    # Print out every millionth row requested to do so
+    progress_every = 1000000
 
     def process_bucket():
         nonlocal reads_logged
@@ -305,87 +322,56 @@ def _map_qname_sorted(
         if not bucket:
             return
 
-        # Determine NH
-        nh = None
-        for aln in bucket:
-            try:
-                nh = aln.opt("NH")
-                break
-            except Exception:
-                pass
-        genomic_matches = nh if isinstance(nh, int) else len(bucket)
+        genomic_matches = nh_value if isinstance(nh_value, int) else len(bucket)
         if genomic_matches > max_nh:
             reason_nh_too_big += 1
-            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
-                logger.debug(f"{_get_read_name(bucket[0])}: skip NH={genomic_matches} > max_nh={max_nh}")
-                reads_logged += 1
             return
 
-        exact_tmp: Dict[str, None] = {}
-        approx_tmp: Dict[str, None] = {}
-        matched_names: Dict[str, None] = {}
-        sum_matches = 0
+        # Use sets instead of dicts for better memory efficiency
+        exact_set = set()
+        approx_set = set()
         hit_any_matures = False
 
-        for aln in bucket:
-            if getattr(aln, "is_unmapped", False):
-                continue
-            chr_ = getattr(aln, "reference_name", None)
-            if chr_ is None:
-                continue
-            if chr_ not in mature_index:
+        # Old implementation using Dicts, much more memory wasteful
+        #exact_tmp: Dict[str, None] = {}
+        #approx_tmp: Dict[str, None] = {}
+        #matched_names: Dict[str, None] = {}
+        #sum_matches = 0
+        #hit_any_matures = False
+
+        for aln_data in bucket:
+            if aln_data.chr not in mature_index:
                 reason_no_chr += 1
                 continue
-            strand = "-" if getattr(aln, "is_reverse", False) else "+"
-            if strand not in mature_index[chr_]:
+
+            strand = "-" if aln_data.is_reverse else "+"
+            if strand not in mature_index[aln_data.chr]:
                 reason_no_strand += 1
                 continue
 
-            start_1b, end_1b = _aln_locus_1b(aln)
-            nm = None
-            try:
-                nm = aln.opt("NM")
-            except Exception:
-                pass
-            non_pm = 0 if (nm == 0) else 1
+            non_pm = 0 if (aln_data.nm == 0) else 1
+            cand_matures = mature_index[aln_data.chr][strand]
 
-            cand_matures = mature_index[chr_][strand]
-            local_hit = False
             for m in cand_matures:
                 # overlap check
-                if end_1b < m.start or start_1b > m.end:
+                if aln_data.end_1b < m.start or aln_data.start_1b > m.end:
                     continue
-                #d = _distance_to_mature(start_1b, end_1b, m)
-                d = _distance_out_mature(start_1b, end_1b, m)
+
+                d = _distance_out_mature(aln_data.start_1b, aln_data.end_1b, m)
+
                 if d <= shift:
-                    # Perfect hit
                     if non_pm == 0 and d == 0:
-                        exact_tmp[m.name] = None
-                    # Otherwise approximate hit, all other logic appended on top of perfect hit
-                    approx_tmp[m.name] = None
-                    matched_names[m.name] = None
-                    sum_matches += 1
-                    local_hit = True
+                        exact_set.add(m.name)
+                    approx_set.add(m.name)
+                    hit_any_matures = True
                 else:
                     reason_distance_too_big += 1
-            if local_hit:
-                hit_any_matures = True
 
         if not hit_any_matures:
             reason_no_mature_overlap += 1
-            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
-                a0 = next((a for a in bucket if not getattr(a, "is_unmapped", False)), None)
-                if a0 is not None:
-                    chr_ = getattr(a0, "reference_name", None)
-                    st = "-" if getattr(a0, "is_reverse", False) else "+"
-                    logger.debug(
-                        f"{_get_read_name(a0)}: no mature overlap at chr={chr_!r}, strand={st}, "
-                        f"start/end={_aln_locus_1b(a0)}"
-                    )
-                reads_logged += 1
             return
 
-        matched = list(matched_names.keys())
+        matched = list(approx_set) # All matches within shift tolerance
         K = len(matched)
         if K == 0:
             reason_no_mature_overlap += 1
@@ -393,12 +379,12 @@ def _map_qname_sorted(
 
         if multi == "unique" and K > 1:
             reason_multi_conflict += 1
-            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
-                logger.debug(
-                    f"{_get_read_name(bucket[0])}: multi-mature conflict {matched}, "
-                    f"sum_matches={sum_matches}, NH={genomic_matches}"
-                )
-                reads_logged += 1
+            #if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+            #    logger.debug(
+            #        f"{_get_read_name(bucket[0])}: multi-mature conflict {matched}, "
+            #        f"sum_matches={sum_matches}, NH={genomic_matches}"
+            #    )
+            #    reads_logged += 1
             return
 
         # weight per mature
@@ -408,13 +394,13 @@ def _map_qname_sorted(
             w = 1.0
 
         for name in matched:
-            ensure(name)
-            if name in exact_tmp:
-                mature_counts[name][0] += w  # exact
-                mature_counts[name][1] += w  # approx (exact is a subset of approx)
-            elif name in approx_tmp:
-                mature_counts[name][1] += w  # approx only
-            mature_counts[name][2] += w      # nonspecific always gets weight
+            counts = mature_counts[name]
+            if name in exact_set:
+                counts[0] += w  # exact
+                counts[1] += w  # approx (exact is a subset of approx)
+            elif name in approx_set:
+                counts[1] += w  # approx only
+            counts[2] += w  # nonspecific always gets weight
 
     with bn.AlignmentFile(str(bam_path), "rb") as bam:
         for aln in bam:
@@ -426,14 +412,22 @@ def _map_qname_sorted(
                 logger.info(f"Processed {aligned_reads:,} alignments...")
 
             qn = _get_read_name(aln)
-            if current_qname is None:
+
+            # Extract NH tag once per read group
+            if current_qname != qn:
+                if current_qname is not None:
+                    process_bucket()
+                    bucket.clear()  # Reuse list
                 current_qname = qn
-            if qn != current_qname:
-                process_bucket()
-                bucket = [aln]
-                current_qname = qn
-            else:
-                bucket.append(aln)
+                try:
+                    nh_value = aln.opt("NH")
+                except (KeyError, AttributeError):
+                    nh_value = None
+
+            # Extract minimal data (more memory efficient that prior wasteful approach)
+            aln_data = _extract_alignment_data(aln)
+            if aln_data is not None: # Skip if extraction failed
+                bucket.append(aln_data)
 
     process_bucket()
 
@@ -450,7 +444,7 @@ def _map_qname_sorted(
             f"multi_mature_conflict={reason_multi_conflict}"
         )
 
-    return mature_counts, aligned_reads
+    return dict(mature_counts), aligned_reads
 
 
 def _map_unsorted_nh_bucket(
@@ -462,6 +456,7 @@ def _map_unsorted_nh_bucket(
     multi: str = "unique",
     logger: logging.Logger | None = None,
     log_reads: int = 0,
+    max_buffer_size: int = 100000, # For limiting buffer size
 ) -> Tuple[Dict[str, List[float]], int]:
     """
     Stream an unsorted BAM, buffering per read until we've seen NH alignments.
@@ -470,6 +465,10 @@ def _map_unsorted_nh_bucket(
     """
     if logger:
         logger.info(f"Mapping (NH-bucket) in {bam_path}")
+        logger.warning(
+            f"NH-bucket mode uses memory buffer (max {max_buffer_size} reads). "
+            "For large files, sort by QNAME first: samtools sort -n"
+        )
         if logger.isEnabledFor(logging.DEBUG):
             try:
                 with bn.AlignmentFile(str(bam_path), "rb") as btmp:
@@ -484,7 +483,7 @@ def _map_unsorted_nh_bucket(
             except Exception:
                 pass
 
-    mature_counts: Dict[str, List[float]] = {}
+    mature_counts: Dict[str, List[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
     aligned_reads = 0
 
     # debugging counters
@@ -495,14 +494,11 @@ def _map_unsorted_nh_bucket(
     reason_distance_too_big = 0
     reason_multi_conflict = 0
 
-    def ensure(name: str):
-        if name not in mature_counts:
-            mature_counts[name] = [0.0, 0.0, 0.0]
-
-    buckets: Dict[str, List] = defaultdict(list)
+    # Memory efficiency update using AlignmentData-class
+    buckets: Dict[str, List[AlignmentData]] = {}
     nh_by_read: Dict[str, Optional[int]] = {}
     reads_logged = 0
-    progress_every = 100000
+    progress_every = 1000000
 
     def process_bucket(qn: str):
         nonlocal reads_logged
@@ -514,75 +510,61 @@ def _map_unsorted_nh_bucket(
         genomic_matches = nh if isinstance(nh, int) else len(bucket)
         if genomic_matches > max_nh:
             reason_nh_too_big += 1
-            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
-                logger.debug(f"{qn}: skip NH={genomic_matches} > max_nh={max_nh}")
-                reads_logged += 1
             return
 
-        exact_tmp: Dict[str, None] = {}
-        approx_tmp: Dict[str, None] = {}
-        matched_names: Dict[str, None] = {}
-        sum_matches = 0
+        # Sets are more memory efficient with minimum alignment info used
+        exact_set = set()
+        approx_set = set()
         hit_any_matures = False
 
-        for aln in bucket:
-            if getattr(aln, "is_unmapped", False):
-                continue
-            chr_ = getattr(aln, "reference_name", None)
-            if chr_ is None:
-                continue
-            if chr_ not in mature_index:
+        # Old memory wasteful Dict-approach
+        #exact_tmp: Dict[str, None] = {}
+        #approx_tmp: Dict[str, None] = {}
+        #matched_names: Dict[str, None] = {}
+        #sum_matches = 0
+        #hit_any_matures = False
+
+        for aln_data in bucket:
+            if aln_data.chr not in mature_index:
                 reason_no_chr += 1
                 continue
-            strand = "-" if getattr(aln, "is_reverse", False) else "+"
-            if strand not in mature_index[chr_]:
+
+            strand = "-" if aln_data.is_reverse else "+"
+            if strand not in mature_index[aln_data.chr]:
                 reason_no_strand += 1
                 continue
 
-            start_1b, end_1b = _aln_locus_1b(aln)
-            nm = None
-            try:
-                nm = aln.opt("NM")
-            except Exception:
-                pass
-            non_pm = 0 if (nm == 0) else 1
+            non_pm = 0 if (aln_data.nm == 0) else 1
+            cand_matures = mature_index[aln_data.chr][strand]
 
-            cand_matures = mature_index[chr_][strand]
-            local_hit = False
             for m in cand_matures:
-                if end_1b < m.start or start_1b > m.end:
+                if aln_data.end_1b < m.start or aln_data.start_1b > m.end:
                     continue
-                #d = _distance_to_mature(start_1b, end_1b, m)
-                d = _distance_out_mature(start_1b, end_1b, m)
+
+                d = _distance_out_mature(aln_data.start_1b, aln_data.end_1b, m)
+
                 if d <= shift:
-                    # Perfect hit
                     if non_pm == 0 and d == 0:
-                        exact_tmp[m.name] = None
-                    # Otherwise approximate hit, all other logic appended on top of perfect hit
-                    approx_tmp[m.name] = None
-                    matched_names[m.name] = None
-                    sum_matches += 1
-                    local_hit = True
+                        exact_set.add(m.name)
+                    approx_set.add(m.name)
+                    hit_any_matures = True
                 else:
                     reason_distance_too_big += 1
-            if local_hit:
-                hit_any_matures = True
 
         if not hit_any_matures:
             reason_no_mature_overlap += 1
             if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
-                a0 = next((a for a in bucket if not getattr(a, "is_unmapped", False)), None)
+                a0 = bucket[0] if bucket else None
                 if a0 is not None:
-                    chr_ = getattr(a0, "reference_name", None)
-                    st = "-" if getattr(a0, "is_reverse", False) else "+"
+                    st = "-" if a0.is_reverse else "+"
                     logger.debug(
-                        f"{_get_read_name(a0)}: no mature overlap. "
-                        f"chr={chr_!r}, strand={st}, start/end={_aln_locus_1b(a0)}"
+                        f"{qn}: no mature overlap. "
+                        f"chr={a0.chr!r}, strand={st}, start/end=({a0.start_1b}, {a0.end_1b})"
                     )
                 reads_logged += 1
             return
 
-        matched = list(matched_names.keys())
+        matched = list(approx_set) # All matches within shift tolerance
         K = len(matched)
         if K == 0:
             reason_no_mature_overlap += 1
@@ -590,12 +572,12 @@ def _map_unsorted_nh_bucket(
 
         if multi == "unique" and K > 1:
             reason_multi_conflict += 1
-            if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
-                logger.debug(
-                    f"{qn}: multi-mature conflict {matched}, "
-                    f"sum_matches={sum_matches}, NH={genomic_matches}"
-                )
-                reads_logged += 1
+            #if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
+            #    logger.debug(
+            #        f"{qn}: multi-mature conflict {matched}, "
+            #        f"sum_matches={sum_matches}, NH={genomic_matches}"
+            #    )
+            #    reads_logged += 1
             return
 
         if multi == "fractional" and K > 1:
@@ -604,33 +586,50 @@ def _map_unsorted_nh_bucket(
             w = 1.0
 
         for name in matched:
-            ensure(name)
-            if name in exact_tmp:
-                mature_counts[name][0] += w
-                mature_counts[name][1] += w
-            elif name in approx_tmp:
-                mature_counts[name][1] += w
-            mature_counts[name][2] += w
+            counts = mature_counts[name]
+            if name in exact_set:
+                counts[0] += w  # exact
+                counts[1] += w  # approx (exact is a subset of approx)
+            else:
+                counts[1] += w  # approx only
+            counts[2] += w      # nonspecific always gets weight
 
-    for aln in bn.AlignmentFile(str(bam_path), "rb"):
-        if getattr(aln, "is_unmapped", False):
-            continue
-        aligned_reads += 1
-        if logger and aligned_reads % progress_every == 0:
-            logger.info(f"Processed {aligned_reads:,} alignments...")
+    with bn.AlignmentFile(str(bam_path), "rb") as bam:
+        for aln in bam:
+            if getattr(aln, "is_unmapped", False):
+                continue
+            aligned_reads += 1
 
-        qn = _get_read_name(aln)
-        buckets[qn].append(aln)
+            if logger and aligned_reads % progress_every == 0:
+                logger.info(f"Processed {aligned_reads:,} alignments... (buffer: {len(buckets)} reads)")
 
-        if qn not in nh_by_read or nh_by_read[qn] is None:
-            try:
-                nh_by_read[qn] = aln.opt("NH")
-            except Exception:
-                nh_by_read.setdefault(qn, None)
+            qn = _get_read_name(aln)
 
-        nh = nh_by_read.get(qn)
-        if isinstance(nh, int) and len(buckets[qn]) >= nh:
-            process_bucket(qn)
+            # Memory sanity checking
+            if qn not in buckets and len(buckets) >= max_buffer_size:
+                raise MemoryError(
+                    f"Buffer exceeded {max_buffer_size} reads. "
+                    "BAM may not be name-sorted. "
+                    "Sort with: samtools sort -n -o namesorted.bam input.bam"
+                )
+
+            # Extract minimal data (more memory efficient that prior wasteful approach)
+            aln_data = _extract_alignment_data(aln)
+            if aln_data is None:  # Skip if extraction failed
+                continue
+
+            if qn not in buckets:
+                buckets[qn] = []
+                try:
+                    nh_by_read[qn] = aln.opt("NH")
+                except (KeyError, AttributeError):
+                    nh_by_read[qn] = None
+
+            buckets[qn].append(aln_data)
+
+            nh = nh_by_read.get(qn)
+            if isinstance(nh, int) and len(buckets[qn]) >= nh:
+                process_bucket(qn)
 
     for qn in list(buckets.keys()):
         process_bucket(qn)
@@ -648,7 +647,7 @@ def _map_unsorted_nh_bucket(
             f"multi_mature_conflict={reason_multi_conflict}"
         )
 
-    return mature_counts, aligned_reads
+    return dict(mature_counts), aligned_reads
 
 
 def map_matrix(
