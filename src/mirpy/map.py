@@ -9,15 +9,7 @@ import glob
 import logging
 import bamnostic as bn
 import traceback
-
-@dataclass
-class Mature:
-    name: str
-    chr: str
-    strand: str
-    start: int  # 1-based inclusive
-    end: int    # 1-based inclusive
-
+from miRpyClasses import AlignmentData, Mature
 
 def _make_logger(level: str) -> logging.Logger:
     lvl = getattr(logging, level.upper(), logging.INFO)
