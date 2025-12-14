@@ -9,7 +9,7 @@ import glob
 import logging
 import bamnostic as bn
 import traceback
-from miRpyClasses import AlignmentData, Mature
+from .miRpyClasses import AlignmentData, Mature
 
 
 def _extract_alignment_data(aln) -> Optional[AlignmentData]:
@@ -39,7 +39,7 @@ def _make_logger(level: str) -> logging.Logger:
     logger = logging.getLogger("mirpy.map")
     if not logger.handlers:
         handler = logging.StreamHandler()
-        fmt = logging.Formatter("[%(levelname)s] %(message)s")
+        fmt = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
         handler.setFormatter(fmt)
         logger.addHandler(handler)
     logger.setLevel(lvl)
@@ -456,7 +456,7 @@ def _map_unsorted_nh_bucket(
     multi: str = "unique",
     logger: logging.Logger | None = None,
     log_reads: int = 0,
-    max_buffer_size: int = 100000, # For limiting buffer size
+    # max_buffer_size = 100000,
 ) -> Tuple[Dict[str, List[float]], int]:
     """
     Stream an unsorted BAM, buffering per read until we've seen NH alignments.
@@ -465,10 +465,6 @@ def _map_unsorted_nh_bucket(
     """
     if logger:
         logger.info(f"Mapping (NH-bucket) in {bam_path}")
-        logger.warning(
-            f"NH-bucket mode uses memory buffer (max {max_buffer_size} reads). "
-            "For large files, sort by QNAME first: samtools sort -n"
-        )
         if logger.isEnabledFor(logging.DEBUG):
             try:
                 with bn.AlignmentFile(str(bam_path), "rb") as btmp:
@@ -606,12 +602,12 @@ def _map_unsorted_nh_bucket(
             qn = _get_read_name(aln)
 
             # Memory sanity checking
-            if qn not in buckets and len(buckets) >= max_buffer_size:
-                raise MemoryError(
-                    f"Buffer exceeded {max_buffer_size} reads. "
-                    "BAM may not be name-sorted. "
-                    "Sort with: samtools sort -n -o namesorted.bam input.bam"
-                )
+            #if qn not in buckets and len(buckets) >= max_buffer_size:
+            #    raise MemoryError(
+            #        f"Buffer exceeded {max_buffer_size} reads. "
+            #        "BAM may not be name-sorted. "
+            #        "Sort with: samtools sort -n -o namesorted.bam input.bam"
+            #    )
 
             # Extract minimal data (more memory efficient that prior wasteful approach)
             aln_data = _extract_alignment_data(aln)
