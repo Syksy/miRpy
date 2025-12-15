@@ -9,6 +9,9 @@ import glob
 import logging
 import bamnostic as bn
 import traceback
+import psutil
+import sys
+import gc
 from .miRpyClasses import AlignmentData, Mature
 
 
@@ -32,6 +35,11 @@ def _extract_alignment_data(aln) -> Optional[AlignmentData]:
         nm = 1  # Assume non-perfect match if NM tag missing
 
     return AlignmentData(chr_, start_1b, end_1b, is_reverse, nm)
+
+
+def _get_memory_usage():
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024 # Current memory usage in MB
 
 
 def _make_logger(level: str) -> logging.Logger:
@@ -121,13 +129,22 @@ def load_mature_only_gff(
                 for st, matures in mature_index[chr_].items():
                     logger.debug(f"  chr={chr_!r} strand={st}: {len(matures)} matures")
             # List all candidate mature miRNA in debug
-            logger.debug("Full list of candidate mature miRNAs from GFF:")
+            all_matures = []
             for chr_ in sorted(mature_index.keys()):
                 for st, matures in mature_index[chr_].items():
-                    for m in matures:
-                        logger.debug(
-                            f"  {m.name}\t{m.chr}:{m.start}-{m.end}({m.strand})"
-                        )
+                    all_matures.extend(matures)
+            logger.debug("Head and tail of candidate mature miRNAs from GFF:")
+            #for chr_ in sorted(mature_index.keys()):
+            #    for st, matures in mature_index[chr_].items():
+            #        #for m in matures:
+            #        for m in matures[:5] + matures[-5:]:
+            #            logger.debug(
+            #                f"  {m.name}\t{m.chr}:{m.start}-{m.end}({m.strand})"
+            #            )
+            for m in all_matures[:5] + all_matures[-5:]:
+                logger.debug(
+                    f"  {m.name}\t{m.chr}:{m.start}-{m.end}({m.strand})"
+                )
 
     return mature_index
 
@@ -409,7 +426,8 @@ def _map_qname_sorted(
             aligned_reads += 1
 
             if logger and aligned_reads % progress_every == 0:
-                logger.info(f"Processed {aligned_reads:,} alignments...")
+                current_mem = _get_memory_usage()
+                logger.info(f"Processed {aligned_reads:,} alignments... (Memory: {current_mem:.1f} MB)")
 
             qn = _get_read_name(aln)
 
@@ -590,45 +608,55 @@ def _map_unsorted_nh_bucket(
                 counts[1] += w  # approx only
             counts[2] += w      # nonspecific always gets weight
 
-    with bn.AlignmentFile(str(bam_path), "rb") as bam:
-        for aln in bam:
-            if getattr(aln, "is_unmapped", False):
-                continue
-            aligned_reads += 1
+    try:
+        with bn.AlignmentFile(str(bam_path), "rb") as bam:
+            for aln in bam:
+                if getattr(aln, "is_unmapped", False):
+                    continue
+                aligned_reads += 1
 
-            if logger and aligned_reads % progress_every == 0:
-                logger.info(f"Processed {aligned_reads:,} alignments... (buffer: {len(buckets)} reads)")
+                if logger and aligned_reads % progress_every == 0:
+                    current_mem = _get_memory_usage()
+                    logger.info(f"Processed {aligned_reads:,} alignments... (Memory: {current_mem:.1f} MB, buffer: {len(buckets)} reads)")
 
-            qn = _get_read_name(aln)
+                qn = _get_read_name(aln)
 
-            # Memory sanity checking
-            #if qn not in buckets and len(buckets) >= max_buffer_size:
-            #    raise MemoryError(
-            #        f"Buffer exceeded {max_buffer_size} reads. "
-            #        "BAM may not be name-sorted. "
-            #        "Sort with: samtools sort -n -o namesorted.bam input.bam"
-            #    )
+                # Memory sanity checking
+                #if qn not in buckets and len(buckets) >= max_buffer_size:
+                #    raise MemoryError(
+                #        f"Buffer exceeded {max_buffer_size} reads. "
+                #        "BAM may not be name-sorted. "
+                #        "Sort with: samtools sort -n -o namesorted.bam input.bam"
+                #    )
 
-            # Extract minimal data (more memory efficient that prior wasteful approach)
-            aln_data = _extract_alignment_data(aln)
-            if aln_data is None:  # Skip if extraction failed
-                continue
+                # Extract minimal data (more memory efficient that prior wasteful approach)
+                aln_data = _extract_alignment_data(aln)
+                if aln_data is None:  # Skip if extraction failed
+                    continue
 
-            if qn not in buckets:
-                buckets[qn] = []
-                try:
-                    nh_by_read[qn] = aln.opt("NH")
-                except (KeyError, AttributeError):
-                    nh_by_read[qn] = None
+                if qn not in buckets:
+                    buckets[qn] = []
+                    try:
+                        nh_by_read[qn] = aln.opt("NH")
+                    except (KeyError, AttributeError):
+                        nh_by_read[qn] = None
 
-            buckets[qn].append(aln_data)
+                buckets[qn].append(aln_data)
 
-            nh = nh_by_read.get(qn)
-            if isinstance(nh, int) and len(buckets[qn]) >= nh:
-                process_bucket(qn)
+                nh = nh_by_read.get(qn)
+                if isinstance(nh, int) and len(buckets[qn]) >= nh:
+                    process_bucket(qn)
+        for qn in list(buckets.keys()):
+            process_bucket(qn)
 
-    for qn in list(buckets.keys()):
-        process_bucket(qn)
+    except Exception as e:
+        if logger:
+            logger.error(f"Error in NH-bucket processing loop at alignment {aligned_reads:,}")
+            logger.error(f"Buffer size at error: {len(buckets):,} reads")
+            logger.error(f"Memory at error: {_get_memory_usage():.1f} MB")
+            logger.error(f"Error: {e}")
+            logger.error(traceback.format_exc())
+        raise
 
     if logger:
         logger.info(
@@ -668,6 +696,12 @@ def map_matrix(
     """
     logger = _make_logger(log_level)
 
+    # System info for debugging
+    logger.debug(f"Python version: {sys.version}")
+    logger.debug(f"Starting memory: {_get_memory_usage():.1f} MB")
+    logger.debug(f"Available memory: {psutil.virtual_memory().available / 1024 / 1024:.1f} MB")
+    logger.debug(f"Total memory: {psutil.virtual_memory().total / 1024 / 1024:.1f} MB")
+
     # Load mature annotations
     mature_index = load_mature_only_gff(gff_path, logger=logger)
 
@@ -686,7 +720,8 @@ def map_matrix(
     per_sample_counts: List[Dict[str, List[float]]] = []
     per_sample_aligned: List[int] = []
 
-    for b in bam_list:
+    for idx, b in enumerate(bam_list, 1):
+        logger.info(f"Processing BAM {idx}/{len(bam_list)}: {b}")
         try:
             mc, aligned = _map_one_bam(
                 b,
@@ -700,6 +735,10 @@ def map_matrix(
             )
             per_sample_counts.append(mc)
             per_sample_aligned.append(aligned)
+
+            # Clean up with garbage collection after processing each BAM
+            gc.collect()
+
             if logger.isEnabledFor(logging.DEBUG):
                 nonzero_exact = sum(1 for v in mc.values() if v[0] > 0)
                 nonzero_approx = sum(1 for v in mc.values() if v[1] > 0)
