@@ -720,8 +720,25 @@ def map_matrix(
     per_sample_counts: List[Dict[str, List[float]]] = []
     per_sample_aligned: List[int] = []
 
-    for idx, b in enumerate(bam_list, 1):
-        logger.info(f"Processing BAM {idx}/{len(bam_list)}: {b}")
+    # Prepare output paths
+    outp = Path(out_path)
+    outp.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = outp.with_suffix('.tmp.tsv')
+
+    # Metric selection
+    metric = metric.lower()
+    cpm = metric.endswith("_cpm")
+    base = metric.replace("_cpm", "")
+    metricid = {"exact": 0, "approx": 1, "nonspecific": 2}.get(base)
+    if metricid is None:
+        logger.error(
+            "--metric must be one of: exact, approx, nonspecific, "
+            "exact_cpm, approx_cpm, nonspecific_cpm"
+        )
+        return 2
+
+    for bamf, b in enumerate(bam_list, 1):
+        logger.info(f"Processing BAM {bamf}/{len(bam_list)}: {b}")
         try:
             mc, aligned = _map_one_bam(
                 b,
@@ -739,6 +756,29 @@ def map_matrix(
             # Clean up with garbage collection after processing each BAM
             gc.collect()
 
+            # Write temporary matrix after each BAM
+            logger.info(f"Writing temporary matrix to {tmp_path}...")
+            features_so_far = sorted({m for mc in per_sample_counts for m in mc.keys()})
+            samples_so_far = sample_names[:bamf]
+
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                fh.write("feature\t" + "\t".join(samples_so_far) + "\n")
+                for feat in features_so_far:
+                    vals: List[str] = []
+                    for sampid, mc in enumerate(per_sample_counts):
+                        cnt = mc.get(feat, [0.0, 0.0, 0.0])[metricid]
+                        if cpm:
+                            aligned_val = per_sample_aligned[sampid] or 1
+                            val = 1_000_000 * cnt / aligned_val
+                            vals.append(f"{val:.4f}")
+                        else:
+                            vals.append(f"{cnt:.4f}")
+                    fh.write(feat + "\t" + "\t".join(vals) + "\n")
+
+            logger.info(f"Temporary matrix saved ({len(features_so_far)} features with {len(samples_so_far)} samples)")
+            logger.info(f"Successfully processed {bamf}/{len(bam_list)} BAMs")
+            logger.info(f"Current memory: {_get_memory_usage():.1f} MB")
+
             if logger.isEnabledFor(logging.DEBUG):
                 nonzero_exact = sum(1 for v in mc.values() if v[0] > 0)
                 nonzero_approx = sum(1 for v in mc.values() if v[1] > 0)
@@ -755,25 +795,13 @@ def map_matrix(
             logger.debug("Traceback after Exception on _map_one_bam:\n" + traceback.format_exc())
             return 1
 
-    # Feature set = all mature names observed
+    # Feature set is all observed mature miRNA names
     features = sorted({m for mc in per_sample_counts for m in mc.keys()})
     if not features:
         logger.warning(
             "No mature miRNAs matched any BAM. Check genome build (chr1 vs 1), "
             "strand orientation, or shift/NH/multi settings."
         )
-
-    # Metric selection
-    metric = metric.lower()
-    cpm = metric.endswith("_cpm")
-    base = metric.replace("_cpm", "")
-    idx = {"exact": 0, "approx": 1, "nonspecific": 2}.get(base)
-    if idx is None:
-        logger.error(
-            "--metric must be one of: exact, approx, nonspecific, "
-            "exact_cpm, approx_cpm, nonspecific_cpm"
-        )
-        return 2
 
     # Write matrix
     outp = Path(out_path)
@@ -783,10 +811,10 @@ def map_matrix(
         fh.write("feature\t" + "\t".join(sample_names) + "\n")
         for feat in features:
             vals: List[str] = []
-            for s_idx, mc in enumerate(per_sample_counts):
-                cnt = mc.get(feat, [0.0, 0.0, 0.0])[idx]
+            for sampid, mc in enumerate(per_sample_counts):
+                cnt = mc.get(feat, [0.0, 0.0, 0.0])[metricid]
                 if cpm:
-                    aligned = per_sample_aligned[s_idx] or 1
+                    aligned = per_sample_aligned[sampid] or 1
                     val = 1_000_000 * cnt / aligned
                     vals.append(f"{val:.4f}")
                 else:
@@ -794,5 +822,13 @@ def map_matrix(
             fh.write(feat + "\t" + "\t".join(vals) + "\n")
 
     logger.info(f"Wrote matrix to {outp} with {len(features)} features and {len(sample_names)} samples")
+
+    try:
+        tmp_path.unlink()
+        logger.info(f"Removed temporary file: {tmp_path}")
+    except Exception as e:
+        logger.warning(f"Could not remove temporary file {tmp_path}: {e}")
+
+    logger.info(f"Final memory usage: {_get_memory_usage():.1f} MB")
     return 0
 
