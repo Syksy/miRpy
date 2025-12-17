@@ -171,13 +171,13 @@ def _aln_locus_1b(aln) -> Tuple[int, int]:
     return start_1b, end_1b
 
 
-# Debugging; this compares read against absolute known miRNA site start/end boundaries
-def _distance_to_mature(start_1b: int, end_1b: int, m: Mature) -> int:
+# Strict distance metric will also count read ends within miRNA regions to increment the shift
+def _distance_strict(start_1b: int, end_1b: int, m: Mature) -> int:
     return abs(m.start - start_1b) + abs(m.end - end_1b)
 
 
-# Debugging; this compares against how much bases the aligned read crosses over the known miRNA boundaries
-def _distance_out_mature(start_1b: int, end_1b: int, m: Mature) -> int:
+# Containment counts distance for reads fully inside the miRNA region as 0, and computes only outside shift
+def _distance_containment(start_1b: int, end_1b: int, m: Mature) -> int:
     return max(0, m.start - start_1b) + max(0, end_1b - m.end)
 
 
@@ -213,6 +213,7 @@ def _map_one_bam(
     max_nh: int,
     mode: str = "qname",    # "qname", "nh-bucket", or "auto"
     multi: str = "unique",  # "unique" or "fractional"
+    dist: str = "strict",   # "strict" or "containment
     logger: logging.Logger | None = None,
     log_reads: int = 0,
 ) -> Tuple[Dict[str, List[float]], int]:
@@ -237,6 +238,7 @@ def _map_one_bam(
                 shift=shift,
                 max_nh=max_nh,
                 multi=multi,
+                dist=dist,
                 logger=logger,
                 log_reads=log_reads,
             )
@@ -247,6 +249,7 @@ def _map_one_bam(
                 shift=shift,
                 max_nh=max_nh,
                 multi=multi,
+                dist=dist,
                 logger=logger,
                 log_reads=log_reads,
             )
@@ -258,6 +261,7 @@ def _map_one_bam(
                     shift=shift,
                     max_nh=max_nh,
                     multi=multi,
+                    dist=dist,
                     logger=logger,
                     log_reads=log_reads,
                 )
@@ -267,6 +271,7 @@ def _map_one_bam(
                 shift=shift,
                 max_nh=max_nh,
                 multi=multi,
+                dist=dist,
                 logger=logger,
                 log_reads=log_reads,
             )
@@ -286,6 +291,7 @@ def _map_qname_sorted(
     shift: int,
     max_nh: int,
     multi: str = "unique",
+    dist: str = "strct",
     logger: logging.Logger | None = None,
     log_reads: int = 0,
 ) -> Tuple[Dict[str, List[float]], int]:
@@ -374,7 +380,10 @@ def _map_qname_sorted(
                 if aln_data.end_1b < m.start or aln_data.start_1b > m.end:
                     continue
 
-                d = _distance_out_mature(aln_data.start_1b, aln_data.end_1b, m)
+                if dist == "strict":
+                    d = _distance_strict(aln_data.start_1b, aln_data.end_1b, m)
+                elif dist == "containment":
+                    d = _distance_containment(aln_data.start_1b, aln_data.end_1b, m)
 
                 if d <= shift:
                     if non_pm == 0 and d == 0:
@@ -471,7 +480,8 @@ def _map_unsorted_nh_bucket(
     *,
     shift: int,
     max_nh: int,
-    multi: str = "unique",
+    multi: str = "unique", # "unique" or "fractional"
+    dist: str = "strict",  # "strict" or "containment"
     logger: logging.Logger | None = None,
     log_reads: int = 0,
     # max_buffer_size = 100000,
@@ -555,7 +565,10 @@ def _map_unsorted_nh_bucket(
                 if aln_data.end_1b < m.start or aln_data.start_1b > m.end:
                     continue
 
-                d = _distance_out_mature(aln_data.start_1b, aln_data.end_1b, m)
+                if dist == "strict":
+                    d = _distance_strict(aln_data.start_1b, aln_data.end_1b, m)
+                elif dist == "containment":
+                    d = _distance_containment(aln_data.start_1b, aln_data.end_1b, m)
 
                 if d <= shift:
                     if non_pm == 0 and d == 0:
@@ -679,11 +692,12 @@ def map_matrix(
     gff_path: str | Path,
     out_path: str | Path,
     *,
-    metric: str = "exact",   # exact | approx | nonspecific | exact_cpm | approx_cpm | nonspecific_cpm
+    metric: str = "exact",       # exact | approx | nonspecific | exact_cpm | approx_cpm | nonspecific_cpm
     shift: int = 4,
     max_nh: int = 50,
     mode: str = "auto",
     multi: str = "fractional",   # "unique" or "fractional"
+    dist: str = "strict",        # "strict" or "containment"
     log_level: str = "INFO",
     log_reads: int = 0,
 ) -> int:
@@ -736,6 +750,12 @@ def map_matrix(
             "exact_cpm, approx_cpm, nonspecific_cpm"
         )
         return 2
+    # Shift distance selection
+    if dist not in ["strict", "containment"]:
+        logger.error(
+            "--dist must be one of: strict, containment"
+        )
+        return 2
 
     for bamf, b in enumerate(bam_list, 1):
         logger.info(f"Processing BAM {bamf}/{len(bam_list)}: {b}")
@@ -747,6 +767,7 @@ def map_matrix(
                 max_nh=max_nh,
                 mode=mode,
                 multi=multi,
+                dist=dist,
                 logger=logger,
                 log_reads=log_reads,
             )

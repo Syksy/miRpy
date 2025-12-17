@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             max_nh=args.max_nh,
             mode=args.mode,
             multi=args.multi,
+            dist=args.dist,
             log_level=args.log_level,
             log_reads=args.log_reads,
         )
@@ -286,7 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.add_argument(
         "--multi",
-        choices=["unique", "fractional"], # TODO: mature-fractional
+        choices=["unique", "fractional"], #
         default="unique",
         help="Strategy on how to handle multiple mapped reads; 'unique' conserves only uniquely mapped reads, 'fractional' "
              "assigns proportional abundance to each mapped location as per 1 / mapped_locations."
@@ -352,10 +353,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     m.add_argument(
         "--multi",
-        choices=["unique", "fractional"], # TODO: mature-fractional
+        choices=["unique", "fractional"],
         default="fractional",
         help="Strategy on how to handle multiple mapped reads; 'unique' conserves only uniquely mapped reads, 'fractional' "
              "assigns proportional abundance to each mapped location as per 1 / mapped_locations."
+    )
+    m.add_argument(
+        "--dist",
+        choices=["strict", "containment"],
+        default="strict",
+        help="Calculation of distance; 'strict' also calculates reads aligned inside a miRNA region as deviating from "
+             "the ends of the full miRNA, while 'containment' will always give a distance of 0 for reads fully inside miRNA."
     )
     # Debugging assistance
     m.add_argument(
