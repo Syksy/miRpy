@@ -310,7 +310,9 @@ def _map_one_bam(
             else:
                 counts[1] += w  # approx only
             counts[2] += w      # nonspecific always gets weight
-            matched_reads += 1
+
+        # Count the read as being matched as it passed through all criteria and wasn't returned
+        matched_reads += 1
 
 
     # Main loop reading the aligned reads in the BAM file
@@ -381,7 +383,6 @@ def map_matrix(
     metric: str = "exact",       # exact | approx | nonspecific | exact_cpm | approx_cpm | nonspecific_cpm
     shift: int = 4,
     max_nh: int = 50,
-    mode: str = "auto",
     multi: str = "fractional",   # "unique" or "fractional"
     dist: str = "strict",        # "strict" or "containment"
     log_level: str = "INFO",
@@ -408,7 +409,7 @@ def map_matrix(
         return 1
 
     logger.info(
-        f"{len(bam_list)} BAM(s) to process; mode={mode}, shift={shift}, "
+        f"{len(bam_list)} BAM(s) to process; shift={shift}, "
         f"max_nh={max_nh}, multi={multi}"
     )
     sample_names = [Path(b).stem for b in bam_list]
