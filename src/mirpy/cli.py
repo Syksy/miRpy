@@ -116,7 +116,6 @@ def main(argv: list[str] | None = None) -> int:
             metric=args.metric,
             shift=args.shift,
             max_nh=args.max_nh,
-            mode=args.mode,
             multi=args.multi,
             dist=args.dist,
             log_level=args.log_level,
@@ -343,13 +342,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=50,
         help="Skip reads with NH greater than this (default 50)."
-    )
-    m.add_argument(
-        "--mode",
-        choices=["auto", "qname", "nh-bucket"],
-        default="auto",
-        help="How to read BAMs: 'qname' expects name-sorted; 'nh-bucket' streams unsorted using NH to know when a read is complete; "
-             "'auto' tries qname else nh-bucket."
     )
     m.add_argument(
         "--multi",
