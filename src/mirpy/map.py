@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import gzip
 import os
 import glob
@@ -147,6 +148,32 @@ def _get_read_name(aln) -> str:
     return ""
 
 
+def _map_worker_one_bam(
+    payload: dict,
+) -> tuple[str, Optional[dict], int, Optional[str]]:
+    """Multithread worker, loads GFF separately for each worker, maps a BAM, and then returns."""
+    bam_path = payload["bam_path"]
+    try:
+        # Load mature annotations inside the worker (avoids pickling huge mature_index)
+        #mature_index = _load_mature_only_gff(payload["gff_path"], logger=payload["logger"])
+        mature_index = _load_mature_only_gff(payload["gff_path"], logger=None)
+
+        # Call the old _map_one_bam function that handles the mapping of a single BAM file
+        mc, aligned = _map_one_bam(
+            bam_path=bam_path,
+            mature_index=mature_index,
+            max_shift=payload["shift"],
+            max_nh=payload["max_nh"],
+            multi=payload["multi"],
+            dist=payload["dist"],
+            #logger=payload["logger"],
+            log_reads=payload["log_reads"],
+        )
+        return bam_path, mc, aligned, None
+    except Exception as e:
+        return bam_path, None, 0, f"{e}\n{traceback.format_exc()}"
+
+
 def _expand_bam_patterns(bams: List[str]) -> List[str]:
     seen = set()
     out: List[str] = []
@@ -174,11 +201,7 @@ def _map_one_bam(
     logger: logging.Logger | None = None,
     log_reads: int = 1,
 ) -> Tuple[Dict[str, List[float]], int]:
-    """
-    Stream an unsorted BAM, buffering per read until we've seen NH alignments.
-    Same mapping logic as _map_qname_sorted, but grouping reads by QNAME without
-    requiring name-sorted input.
-    """
+    """Stream a possibly unsorted BAM, buffering per read until we've seen NH alignments"""
     if logger:
         logger.info(f"Mapping (NH-bucket) in {bam_path}")
         if logger.isEnabledFor(logging.DEBUG):
@@ -381,12 +404,13 @@ def map_matrix(
     out_path: str | Path,
     *,
     metric: str = "exact",       # exact | approx | nonspecific | exact_cpm | approx_cpm | nonspecific_cpm
-    shift: int = 4,
-    max_nh: int = 50,
+    shift: int = 4,              # Maximum allowed base pair shift around annotated miRNA
+    max_nh: int = 50,            # Max allowed multi-mapping (NH-parameter in BAMs)
     multi: str = "fractional",   # "unique" or "fractional"
     dist: str = "strict",        # "strict" or "containment"
-    log_level: str = "INFO",
+    log_level: str = "INFO",     # INFO | DEBUG | WARNING | ERROR
     log_reads: int = 0,
+    p: int = 1,                  # Number of processes; by default just 1, but can be parallelized
 ) -> int:
     """
     Main function for building a count-like matrix with rows = mature miRNAs, columns = samples.
@@ -402,18 +426,6 @@ def map_matrix(
     # Load mature annotations and the optimization read locations for faster processing
     mature_index = _load_mature_only_gff(gff_path, logger=logger)
 
-    # Expand BAM patterns
-    bam_list = _expand_bam_patterns(bam_paths)
-    if not bam_list:
-        logger.error("No BAMs found.")
-        return 1
-
-    logger.info(
-        f"{len(bam_list)} BAM(s) to process; shift={shift}, "
-        f"max_nh={max_nh}, multi={multi}"
-    )
-    sample_names = [Path(b).stem for b in bam_list]
-
     per_sample_counts: List[Dict[str, List[float]]] = []
     per_sample_aligned: List[int] = []
 
@@ -422,6 +434,7 @@ def map_matrix(
     outp.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = outp.with_suffix('.tmp.tsv')
 
+    ## Sanity checks and formatting of args
     # Metric selection
     metric = metric.lower()
     cpm = metric.endswith("_cpm")
@@ -439,13 +452,55 @@ def map_matrix(
             "--dist must be one of: strict, containment"
         )
         return 3
+    # If nproc not set, pick a reasonable default
+    if p is None or p < 1:
+        p = max(1, os.cpu_count() or 1)
+    # Expand BAM patterns
+    bam_list = _expand_bam_patterns(bam_paths)
+    if not bam_list:
+        logger.error("No BAMs found.")
+        return 1
 
-    for bamf, b in enumerate(bam_list, 1):
-        logger.info(f"Processing BAM {bamf}/{len(bam_list)}: {b}")
-        try:
+    logger.info(
+        f"{len(bam_list)} BAM(s) to process; shift={shift}, "
+        f"max_nh={max_nh}, multi={multi}"
+    )
+    sample_names = [Path(b).stem for b in bam_list]
+
+    # Info before starting
+    logger.info(
+        f"{len(bam_list)} BAM(s) to process; shift={shift}, max_nh={max_nh}, multi={multi}, "
+        f"dist={dist}, p={p}"
+    )
+
+    ## Parallelization helpers
+    # Parallelized one BAM per process
+    per_sample_counts: List[Dict[str, List[float]]] = [dict() for _ in bam_list]
+    per_sample_aligned: List[int] = [0 for _ in bam_list]
+    # Build payloads (small + picklable)
+    payloads = []
+    for b in bam_list:
+        payloads.append({
+            "bam_path": b,
+            "gff_path": str(gff_path),
+            "shift": shift,
+            "max_nh": max_nh,
+            "multi": multi,
+            "dist": dist,
+            "log_reads": log_reads,
+            #"logger": logger,
+        })
+    # Map bam_path to index, so we can reassemble results in the original order
+    bam_to_idx = {b: i for i, b in enumerate(bam_list)}
+
+    # Run
+    if p == 1:
+        # Serial run as a sanity check / fallback
+        for b in bam_list:
+            logger.info(f"Processing non-parallelized BAM: {b}")
             mc, aligned = _map_one_bam(
                 b,
-                mature_index,
+                _load_mature_only_gff(gff_path, logger=logger),
                 max_shift=shift,
                 max_nh=max_nh,
                 multi=multi,
@@ -453,58 +508,37 @@ def map_matrix(
                 logger=logger,
                 log_reads=log_reads,
             )
-            per_sample_counts.append(mc)
-            per_sample_aligned.append(aligned)
+            i = bam_to_idx[b]
+            per_sample_counts[i] = mc
+            per_sample_aligned[i] = aligned
+    else:
+        # Parallel
+        logger.info(f"Running in parallel with {p} processes (one BAM per process).")
+        with ProcessPoolExecutor(max_workers=p) as ex:
+            futures = [ex.submit(_map_worker_one_bam, p) for p in payloads]
 
-            # Clean up with garbage collection after processing each BAM
-            gc.collect()
+            done = 0
+            for fut in as_completed(futures):
+                bam_path, mc, aligned, err = fut.result()
+                done += 1
 
-            # Write temporary matrix after each BAM
-            logger.info(f"Writing temporary matrix to {tmp_path}...")
-            features_so_far = sorted({m for mc in per_sample_counts for m in mc.keys()})
-            samples_so_far = sample_names[:bamf]
+                if err is not None:
+                    logger.error(f"[{done}/{len(bam_list)}] Failed BAM {bam_path}:\n{err}")
+                    return 1
 
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                fh.write("feature\t" + "\t".join(samples_so_far) + "\n")
-                for feat in features_so_far:
-                    vals: List[str] = []
-                    for sampid, mc in enumerate(per_sample_counts):
-                        cnt = mc.get(feat, [0.0, 0.0, 0.0])[metricid]
-                        if cpm:
-                            aligned_val = per_sample_aligned[sampid] or 1
-                            val = 1_000_000 * cnt / aligned_val
-                            vals.append(f"{val:.4f}")
-                        else:
-                            vals.append(f"{cnt:.4f}")
-                    fh.write(feat + "\t" + "\t".join(vals) + "\n")
+                i = bam_to_idx[bam_path]
+                per_sample_counts[i] = mc or {}
+                per_sample_aligned[i] = aligned
 
-            logger.info(f"Temporary matrix saved ({len(features_so_far)} features with {len(samples_so_far)} samples)")
-            logger.info(f"Successfully processed {bamf}/{len(bam_list)} BAMs")
-            logger.info(f"Current memory: {_get_memory_usage():.1f} MB")
+                logger.info(f"[{done}/{len(bam_list)}] Done {bam_path}: aligned={aligned},"
+                            f" features={len(per_sample_counts[i])}")
 
-            if logger.isEnabledFor(logging.DEBUG):
-                nonzero_exact = sum(1 for v in mc.values() if v[0] > 0)
-                nonzero_approx = sum(1 for v in mc.values() if v[1] > 0)
-                nonzero_ns = sum(1 for v in mc.values() if v[2] > 0)
-                logger.debug(
-                    f"{b}: aligned={aligned}, features={len(mc)}, "
-                    f"nonzero_exact={nonzero_exact}, "
-                    f"nonzero_approx={nonzero_approx}, "
-                    f"nonzero_nonspecific={nonzero_ns}, "
-                    f"multi={multi}"
-                )
-        except Exception as e:
-            logger.error(f"{b}: {e}")
-            logger.debug("Traceback after Exception on _map_one_bam:\n" + traceback.format_exc())
-            return 1
-
-    # Feature set is all observed mature miRNA names
+    # Feature set: all observed mature miRNA names across samples
     features = sorted({m for mc in per_sample_counts for m in mc.keys()})
     if not features:
-        logger.warning(
-            "No mature miRNAs matched any BAM. Check genome build (chr1 vs 1), "
-            "strand orientation, or shift/NH/multi settings."
-        )
+        logger.warning("No mature miRNAs matched any BAM.")
+    else:
+        logger.info(f"Total features observed across samples: {len(features)}")
 
     # Write matrix
     outp = Path(out_path)
@@ -518,20 +552,10 @@ def map_matrix(
                 cnt = mc.get(feat, [0.0, 0.0, 0.0])[metricid]
                 if cpm:
                     aligned = per_sample_aligned[sampid] or 1
-                    val = 1_000_000 * cnt / aligned
-                    vals.append(f"{val:.4f}")
+                    vals.append(f"{(1_000_000 * cnt / aligned):.4f}")
                 else:
                     vals.append(f"{cnt:.4f}")
             fh.write(feat + "\t" + "\t".join(vals) + "\n")
 
     logger.info(f"Wrote matrix to {outp} with {len(features)} features and {len(sample_names)} samples")
-
-    try:
-        tmp_path.unlink()
-        logger.info(f"Removed temporary file: {tmp_path}")
-    except Exception as e:
-        logger.warning(f"Could not remove temporary file {tmp_path}: {e}")
-
-    logger.info(f"Final memory usage: {_get_memory_usage():.1f} MB")
     return 0
-

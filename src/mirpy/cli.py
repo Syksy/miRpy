@@ -120,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             dist=args.dist,
             log_level=args.log_level,
             log_reads=args.log_reads,
+            p=args.p,
         )
     else:
         parser.error("Unknown command")
@@ -370,7 +371,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="When DEBUG, log details for the first N reads per BAM (default: 0)."
     )
-
+    m.add_argument(
+        "--p",
+        type=int,
+        default=1,
+        help="Number of parallelized processes to run simultaneous BAMs (Default: 1)."
+    )
     return p
 
 
