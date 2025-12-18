@@ -2,7 +2,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
-import bisect
 import gzip
 import os
 import glob
@@ -76,16 +75,9 @@ def _load_mature_only_gff(
     gff_path: str | Path,
     logger: logging.Logger | None = None,
 ) -> Dict[str, Dict[str, List[Mature]]]:
-    """
-    Load a *mature-only* miRBase-like GFF3.
-
-    Assumes the GFF has been prefiltered to feature == "miRNA".
-    Returns an index: mature_index[chr][strand] -> List[Mature].
-    """
+    """Load mature miRNA tab separated TSV database from e.g. miRBase"""
     # Index of all mature miRNAs as per Mature-class
     mature_index: Dict[str, Dict[str, List[Mature]]] = {}
-    # Corresponding pre-ordered mature starting locations in same order as mature_index
-    mature_start: Dict[str, Dict[str, List[int]]] = {}
 
     with _open_text_auto(gff_path) as fh:
         for line in fh:
@@ -118,13 +110,6 @@ def _load_mature_only_gff(
             )
             mature_index.setdefault(chrom, {}).setdefault(strand, []).append(m)
 
-    # Sort by genomic start for each chr/strand
-    for chr_, strands in mature_index.items():
-        mature_start[chr_] = {}
-        for st, matures in strands.items():
-            matures.sort(key=lambda x: x.start)
-            mature_start[chr_][st] = [m.start for m in matures]
-
     if logger:
         n_matures = sum(len(v2) for v in mature_index.values() for v2 in v.values())
         logger.info(f"GFF (mature-only) loaded: {n_matures} mature miRNAs")
@@ -144,7 +129,7 @@ def _load_mature_only_gff(
                     f"  {m.name}\t{m.chr}:{m.start}-{m.end}({m.strand})"
                 )
 
-    return mature_index, mature_start
+    return mature_index
 
 
 def _is_qname_sorted(bam: bn.AlignmentFile, sample: int = 2000) -> bool:
@@ -167,16 +152,6 @@ def _aln_locus_1b(aln) -> Tuple[int, int]:
     start_1b = (getattr(aln, "pos", 0) or 0) + 1
     end_1b = getattr(aln, "reference_end", start_1b)
     return start_1b, end_1b
-
-
-# Strict distance metric will also count read ends within miRNA regions to increment the shift
-def _distance_strict(start_1b: int, end_1b: int, m: Mature) -> int:
-    return abs(m.start - start_1b) + abs(m.end - end_1b)
-
-
-# Containment counts distance for reads fully inside the miRNA region as 0, and computes only outside shift
-def _distance_containment(start_1b: int, end_1b: int, m: Mature) -> int:
-    return max(0, m.start - start_1b) + max(0, end_1b - m.end)
 
 
 def _get_read_name(aln) -> str:
@@ -210,7 +185,6 @@ def _map_one_bam(
     *,
     shift: int,
     max_nh: int,
-    max_lookback: int,
     mode: str = "qname",    # "qname", "nh-bucket", or "auto"
     multi: str = "unique",  # "unique" or "fractional"
     dist: str = "strict",   # "strict" or "containment
@@ -235,10 +209,8 @@ def _map_one_bam(
             return _map_qname_sorted(
                 bam_path,
                 mature_index,
-                mature_starts,
                 shift=shift,
                 max_nh=max_nh,
-                max_lookback=max_lookback,
                 multi=multi,
                 dist=dist,
                 logger=logger,
@@ -248,10 +220,8 @@ def _map_one_bam(
             return _map_unsorted_nh_bucket(
                 bam_path,
                 mature_index,
-                mature_starts,
                 shift=shift,
                 max_nh=max_nh,
-                max_lookback=max_lookback,
                 multi=multi,
                 dist=dist,
                 logger=logger,
@@ -262,10 +232,8 @@ def _map_one_bam(
                 return _map_qname_sorted(
                     bam_path,
                     mature_index,
-                    mature_starts,
                     shift=shift,
                     max_nh=max_nh,
-                    max_lookback=max_lookback,
                     multi=multi,
                     dist=dist,
                     logger=logger,
@@ -274,10 +242,8 @@ def _map_one_bam(
             return _map_unsorted_nh_bucket(
                 bam_path,
                 mature_index,
-                mature_starts,
                 shift=shift,
                 max_nh=max_nh,
-                max_lookback=max_lookback,
                 multi=multi,
                 dist=dist,
                 logger=logger,
@@ -295,7 +261,6 @@ def _map_one_bam(
 def _map_qname_sorted(
     bam_path: str | Path,
     mature_index: Dict[str, Dict[str, List[Mature]]],
-    mature_starts: Dict[str, Dict[str, List[int]]],
     *,
     shift: int,
     max_nh: int,
@@ -307,10 +272,6 @@ def _map_qname_sorted(
 ) -> Tuple[Dict[str, List[float]], int]:
     """
     Stream a QNAME-sorted BAM and map reads at the mature level.
-
-    multi:
-      - "unique"     : keep only reads matching exactly one mature miRNA.
-      - "fractional" : split read weight evenly across all matching matures.
     """
     if logger:
         logger.info(f"Mapping (QNAME) in {bam_path}")
@@ -365,13 +326,6 @@ def _map_qname_sorted(
         approx_set = set()
         hit_any_matures = False
 
-        # Old implementation using Dicts, much more memory wasteful
-        #exact_tmp: Dict[str, None] = {}
-        #approx_tmp: Dict[str, None] = {}
-        #matched_names: Dict[str, None] = {}
-        #sum_matches = 0
-        #hit_any_matures = False
-
         for aln_data in bucket:
             if aln_data.chr not in mature_index:
                 reason_no_chr += 1
@@ -390,10 +344,11 @@ def _map_qname_sorted(
                 if aln_data.end_1b < m.start or aln_data.start_1b > m.end:
                     continue
 
+                # Distance calculation coded here to avoid function call overheads
                 if dist == "strict":
-                    d = _distance_strict(aln_data.start_1b, aln_data.end_1b, m)
-                elif dist == "containment":
-                    d = _distance_containment(aln_data.start_1b, aln_data.end_1b, m)
+                    d = abs(m.start - aln_data.start_1b) + abs(m.end - aln_data.end_1b)
+                else: # Should be 'containment' due to sanity checks
+                    d = max(0, m.start - aln_data.start_1b) + max(0, aln_data.end_1b - m.end)
 
                 if d <= shift:
                     if non_pm == 0 and d == 0:
@@ -415,15 +370,9 @@ def _map_qname_sorted(
 
         if multi == "unique" and K > 1:
             reason_multi_conflict += 1
-            #if logger and logger.isEnabledFor(logging.DEBUG) and reads_logged < log_reads:
-            #    logger.debug(
-            #        f"{_get_read_name(bucket[0])}: multi-mature conflict {matched}, "
-            #        f"sum_matches={sum_matches}, NH={genomic_matches}"
-            #    )
-            #    reads_logged += 1
             return
 
-        # weight per mature
+        # Added abundance weight per mature
         if multi == "fractional" and K > 1:
             w = 1.0 / float(K)   # split across matching matures
         else:
@@ -487,16 +436,13 @@ def _map_qname_sorted(
 def _map_unsorted_nh_bucket(
     bam_path: str | Path,
     mature_index: Dict[str, Dict[str, List[Mature]]],
-    mature_starts: Dict[str, Dict[str, List[int]]],
     *,
     shift: int,
     max_nh: int,
-    max_lookback: int = 50, # How long of a read to look back into possibly mapping; assume 50bp
     multi: str = "unique",  # "unique" or "fractional"
     dist: str = "strict",   # "strict" or "containment"
     logger: logging.Logger | None = None,
     log_reads: int = 0,
-    # max_buffer_size = 100000,
 ) -> Tuple[Dict[str, List[float]], int]:
     """
     Stream an unsorted BAM, buffering per read until we've seen NH alignments.
@@ -536,6 +482,7 @@ def _map_unsorted_nh_bucket(
     reads_logged = 0
     progress_every = 1000000
 
+    # Define internal function for processing buckets
     def process_bucket(qn: str):
         nonlocal reads_logged
         nonlocal reason_nh_too_big, reason_no_chr, reason_no_strand, reason_no_mature_overlap, \
@@ -553,13 +500,6 @@ def _map_unsorted_nh_bucket(
         approx_set = set()
         hit_any_matures = False
 
-        # Old memory wasteful Dict-approach
-        #exact_tmp: Dict[str, None] = {}
-        #approx_tmp: Dict[str, None] = {}
-        #matched_names: Dict[str, None] = {}
-        #sum_matches = 0
-        #hit_any_matures = False
-
         for aln_data in bucket:
             if aln_data.chr not in mature_index:
                 reason_no_chr += 1
@@ -572,34 +512,29 @@ def _map_unsorted_nh_bucket(
 
             non_pm = 0 if (aln_data.nm == 0) else 1
 
-            # Mature-objects based on chr and strand
-            m_list = mature_index[aln_data.chr][strand]
-            # First index to look at based on chr and strand, notably quicker compisons
-            s_list = mature_starts[aln_data.chr][strand]
+            # Mature-objects based on chr and strand ('+' or '-')
+            mature_list = mature_index[aln_data.chr][strand]
 
-            # Find index where miRNA start would come after our read ends
-            # All valid overlapping miRNAs must start before our read ends
-            right_idx = bisect.bisect_right(s_list, aln_data.end_1b)
-
-            # Iterate backwards from the identified index
-            for i in range(right_idx -1, -1, -1):
-                m = m_list[i]
-
-                # Stop from going too far based on maximum read length
-                if m.start < (aln_data.start_1b - max_lookback):
+            # Loop over annotated mature miRNAs
+            for m in mature_list:
+                # Linear search optimization;
+                # if mature.start > aln_data.end,
+                # all subsequent matures will also start after our read ends so we can quit
+                if m.start > aln_data.end_1b:
                     break
 
-                # Check if miRNA annotation ends before the read starts, if so we discard
+                # Linear search optimization;
+                # If this specific miRNA ends before our read starts it can be skipped
+                # (might be not very efficient if-checking, to be tested)
                 if m.end < aln_data.start_1b:
                     continue
 
-                # If above conditions are passed, we start comparing the shift from perfect alignment to the miRNA
+                # Distance calculation coded here to avoid function call overheads
                 if dist == "strict":
-                    d = _distance_strict(aln_data.start_1b, aln_data.end_1b, m)
-                elif dist == "containment":
-                    d = _distance_containment(aln_data.start_1b, aln_data.end_1b, m)
+                    d = abs(m.start - aln_data.start_1b) + abs(m.end - aln_data.end_1b)
+                else: # Should be 'containment' due to sanity checks
+                    d = max(0, m.start - aln_data.start_1b) + max(0, aln_data.end_1b - m.end)
 
-                # Compare our distance against maximum distance allowed (par 'dist') and add to sets
                 if d <= shift:
                     if non_pm == 0 and d == 0:
                         exact_set.add(m.name)
@@ -607,6 +542,37 @@ def _map_unsorted_nh_bucket(
                     hit_any_matures = True
                 else:
                     reason_distance_too_big += 1
+
+            # Find index where miRNA start would come after our read ends
+            # All valid overlapping miRNAs must start before our read ends
+            #right_idx = bisect.bisect_right(s_list, aln_data.end_1b)
+            #
+            # Iterate backwards from the identified index
+            #for i in range(right_idx -1, -1, -1):
+            #    m = m_list[i]
+            #
+            #    # Stop from going too far based on maximum read length
+            #    if m.start < (aln_data.start_1b - max_lookback):
+            #        break
+            #
+            #    # Check if miRNA annotation ends before the read starts, if so we discard
+            #    if m.end < aln_data.start_1b:
+            #        continue
+            #
+            #    # If above conditions are passed, we start comparing the shift from perfect alignment to the miRNA
+            #    if dist == "strict":
+            #        d = _distance_strict(aln_data.start_1b, aln_data.end_1b, m)
+            #    elif dist == "containment":
+            #        d = _distance_containment(aln_data.start_1b, aln_data.end_1b, m)
+            #
+            #    # Compare our distance against maximum distance allowed (par 'dist') and add to sets
+            #    if d <= shift:
+            #        if non_pm == 0 and d == 0:
+            #            exact_set.add(m.name)
+            #        approx_set.add(m.name)
+            #        hit_any_matures = True
+            #    else:
+            #        reason_distance_too_big += 1
 
             #cand_matures = mature_index[aln_data.chr][strand]
             #
@@ -670,6 +636,7 @@ def _map_unsorted_nh_bucket(
                 counts[1] += w  # approx only
             counts[2] += w      # nonspecific always gets weight
 
+    # Main loop reading the aligned reads in the BAM file
     try:
         with bn.AlignmentFile(str(bam_path), "rb") as bam:
             for aln in bam:
@@ -682,14 +649,6 @@ def _map_unsorted_nh_bucket(
                     logger.info(f"Processed {aligned_reads:,} alignments... (Memory: {current_mem:.1f} MB, buffer: {len(buckets)} reads)")
 
                 qn = _get_read_name(aln)
-
-                # Memory sanity checking
-                #if qn not in buckets and len(buckets) >= max_buffer_size:
-                #    raise MemoryError(
-                #        f"Buffer exceeded {max_buffer_size} reads. "
-                #        "BAM may not be name-sorted. "
-                #        "Sort with: samtools sort -n -o namesorted.bam input.bam"
-                #    )
 
                 # Extract minimal data (more memory efficient that prior wasteful approach)
                 aln_data = _extract_alignment_data(aln)
@@ -744,7 +703,6 @@ def map_matrix(
     metric: str = "exact",       # exact | approx | nonspecific | exact_cpm | approx_cpm | nonspecific_cpm
     shift: int = 4,
     max_nh: int = 50,
-    max_lookback: int = 50,
     mode: str = "auto",
     multi: str = "fractional",   # "unique" or "fractional"
     dist: str = "strict",        # "strict" or "containment"
@@ -812,7 +770,6 @@ def map_matrix(
                 mature_starts,
                 shift=shift,
                 max_nh=max_nh,
-                max_lookback=max_lookback,
                 mode=mode,
                 multi=multi,
                 dist=dist,

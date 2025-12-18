@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mirpy"
-version = "0.1.14"
+version = "0.1.15"
 description = "Misc Python tools for handling aligned miRNA reads"
 readme = "README.md"
 requires-python = ">=3.9"
