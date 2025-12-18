@@ -169,6 +169,8 @@ def _map_worker_one_bam(
             #logger=payload["logger"],
             log_reads=payload["log_reads"],
         )
+        del mature_index
+        gc.collect()
         return bam_path, mc, aligned, None
     except Exception as e:
         return bam_path, None, 0, f"{e}\n{traceback.format_exc()}"
@@ -371,6 +373,8 @@ def _map_one_bam(
                     process_bucket(qn)
         for qn in list(buckets.keys()):
             process_bucket(qn)
+        # Garbage collect after final flush
+        gc.collect()
 
     except Exception as e:
         if logger:
@@ -394,6 +398,11 @@ def _map_one_bam(
             f"distance_too_big={reason_distance_too_big}, "
             f"multi_mature_conflict={reason_multi_conflict}"
         )
+
+    # Garbage collect and drop large structures after finishing the BAM loop
+    buckets.clear()
+    nh_by_read.clear()
+    gc.collect()
 
     return dict(mature_counts), aligned_reads
 
@@ -509,8 +518,10 @@ def map_matrix(
                 log_reads=log_reads,
             )
             i = bam_to_idx[b]
-            per_sample_counts[i] = mc
+            per_sample_counts[i] = mc or {}
             per_sample_aligned[i] = aligned
+            # Garbage collect after finishing a BAM
+            gc.collect()
     else:
         # Parallel
         logger.info(f"Running in parallel with {p} processes (one BAM per process).")
@@ -529,6 +540,8 @@ def map_matrix(
                 i = bam_to_idx[bam_path]
                 per_sample_counts[i] = mc or {}
                 per_sample_aligned[i] = aligned
+                # Garbage collect after finishing a BAM
+                gc.collect()
 
                 logger.info(f"[{done}/{len(bam_list)}] Done {bam_path}: aligned={aligned},"
                             f" features={len(per_sample_counts[i])}")
