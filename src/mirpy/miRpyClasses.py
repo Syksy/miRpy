@@ -4,12 +4,13 @@ from dataclasses import dataclass
 @dataclass
 class AlignmentData:
     """Minimal alignment data to reduce memory footprint."""
-    __slots__ = ('chr', 'start_1b', 'end_1b', 'is_reverse', 'nm')
+    __slots__ = ('chr', 'start_1b', 'end_1b', 'is_reverse', 'nm', 'score')
     chr: str
     start_1b: int
     end_1b: int
     is_reverse: bool
     nm: int
+    score: int
 
 # Mature miRNA
 @dataclass
