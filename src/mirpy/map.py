@@ -20,6 +20,9 @@ def _extract_alignment_data(aln) -> Optional[AlignmentData]:
     if getattr(aln, "is_unmapped", False):
         return None
 
+    if getattr(aln, "is_paired", False) or getattr(aln, "is_supplementary", False):
+        raise ValueError("map-functionality requires unpaired non-supplementary alignments")
+
     chr_ = getattr(aln, "reference_name", None)
     if chr_ is None:
         return None
