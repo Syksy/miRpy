@@ -33,11 +33,12 @@ def _extract_alignment_data(aln) -> Optional[AlignmentData]:
     is_reverse = getattr(aln, "is_reverse", False)
 
     try:
-        nm = aln.opt("NM")
-    except (KeyError, AttributeError):
-        nm = 1  # Assume non-perfect match if NM tag missing
+        nm = int(aln.get_tag("NM"))
+        score = int(aln.get_tag("AS"))
+    except KeyError as exc:
+        raise ValueError("map requires NM and AS tags on every mapped alignment") from exc
 
-    return AlignmentData(chr_, start_1b, end_1b, is_reverse, nm)
+    return AlignmentData(chr_, start_1b, end_1b, is_reverse, nm, score)
 
 
 def _get_memory_usage():
@@ -365,8 +366,8 @@ def _map_one_bam(
                 if qn not in buckets:
                     buckets[qn] = []
                     try:
-                        nh_by_read[qn] = aln.opt("NH")
-                    except (KeyError, AttributeError):
+                        nh_by_read[qn] = aln.get_opt("NH")
+                    except KeyError:
                         nh_by_read[qn] = None
 
                 buckets[qn].append(aln_data)
