@@ -366,7 +366,7 @@ def _map_one_bam(
                 if qn not in buckets:
                     buckets[qn] = []
                     try:
-                        nh_by_read[qn] = aln.get_opt("NH")
+                        nh_by_read[qn] = aln.get_tag("NH")
                     except KeyError:
                         nh_by_read[qn] = None
 
